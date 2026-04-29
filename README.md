@@ -1,37 +1,31 @@
-# Mujina Assist
+# mujina-ros-tui
 
-Mujina Assist は、公式 `mujina_ros` を安全にセットアップ・診断・運用するための日本語TUIアプリです。
+`mujina_ros` を手元で動かすための補助 TUI です。
 
-このプロジェクトは公式 `mujina_ros` の置き換えではありません。公式リポジトリを `third_party/mujina_ros` に clean upstream mirror として内包し、実行時には `workspace/src/mujina_ros` へ生成コピーして使います。安全運用のための差分は `patches/mujina_ros` の patch queue と Mujina Assist 側の診断・preflight・wizard で管理します。
+公式の `mujina_ros` は `third_party/mujina_ros` に固定 commit で同梱しています。このリポジトリでは、作業用 workspace の作成、依存チェック、CAN/デバイス確認、policy/zero profile の確認、実機起動前のロック条件の表示を TUI から扱えるようにしています。
 
-## 目的
+公式 `mujina_ros` の代替ではありません。実機向けの ROS パッケージ本体は upstream をそのまま持ち、補助ツール側で状態確認と起動手順をまとめます。
 
-- 起動直後にTUIを開き、workspace、build、policy、device、CAN、motor、zero、SIM、実機preflightの状態を一覧する
-- `third_party/mujina_ros` の固定commitをもとに再現性のある workspace を作る
-- `vanilla` と `assisted` のモードを分け、patch適用状態とdirty状態を表示する
-- external policy は manifest と SIM verification がない限り実機投入しない
-- zero position は post-zero verification と zero profile 保存を前提にする
-- 実機起動は安全ゲートを通るまでロックする
-- 長い処理や常駐ノードは既存job systemで管理し、ログと復旧状態をTUIから追えるようにする
+## 起動
 
-## 使い方
-
-Ubuntu 24.04 のターミナルで次を実行します。
+Ubuntu 24.04 / ROS 2 Jazzy を想定しています。
 
 ```bash
-git clone <this-repository>
-cd <cloned-directory>
+git clone https://github.com/Aero123421/mujina-ros-tui.git
+cd mujina-ros-tui
 ./start.sh
 ```
 
-`./start.sh` は `.venv` を準備し、通常はTUIを起動します。旧番号メニューは互換用に残しています。
+`./start.sh` は Python 仮想環境を用意して、標準では TUI を起動します。
+
+旧メニューも残しています。
 
 ```bash
 ./start.sh legacy-menu
 ./start.sh menu --legacy
 ```
 
-開発・自動化・緊急操作用のサブコマンドも残しています。
+サブコマンドを直接使うこともできます。
 
 ```bash
 ./start.sh doctor
@@ -40,48 +34,67 @@ cd <cloned-directory>
 ./start.sh policy --test
 ```
 
-## 内包 upstream
+Windows で画面だけ確認する場合は、PowerShell から次のように起動できます。
 
-現在内包している公式 upstream:
+```powershell
+python -m mujina_assist.main tui
+```
+
+ROS や実機デバイスがない環境では、TUI 上の各チェックは `WARN` / `LOCK` になります。
+
+## 入っているもの
+
+- `src/mujina_assist`: TUI と補助コマンド
+- `third_party/mujina_ros`: 公式 `mujina_ros` の vendored copy
+- `patches/mujina_ros`: upstream に対する差分を置く場所
+- `workspace`: 生成される ROS workspace
+- `tests`: この補助ツール側のテスト
+
+## upstream の扱い
+
+同梱している upstream:
 
 - Repository: `https://github.com/rt-net/mujina_ros`
 - Commit: `38ff97f12d0ef424dd7fc840d3ce7a1ebad2a49d`
 - License: MIT License
 - License file: `third_party/mujina_ros/LICENSE`
 
-`third_party/mujina_ros` は clean mirror として扱います。直接編集せず、公式との差分は `patches/mujina_ros/*.patch` として管理してください。詳細は `THIRD_PARTY_NOTICES.md` を参照してください。
+`third_party/mujina_ros` は clean copy として扱います。直接編集せず、必要な差分は `patches/mujina_ros/*.patch` か `src/mujina_assist` 側に置きます。
 
-## Workspace mode
+ライセンス表記は `THIRD_PARTY_NOTICES.md` にまとめています。
 
-- `vanilla`: 内包した公式 `mujina_ros` をそのまま `workspace/src/mujina_ros` へコピーする
-- `assisted`: コピー後に `patches/mujina_ros` のpatch queueを適用する
-- `diagnostic`: 実機にトルクを送る操作を避け、診断中心で扱う
+## workspace mode
 
-workspace signature は upstream commit、patch set hash、dirty状態を含みます。signature が変わると、既存の SIM verified は無効になります。
+- `vanilla`: 同梱した `mujina_ros` をそのまま `workspace/src/mujina_ros` に配置する
+- `assisted`: 配置後に `patches/mujina_ros` の patch queue を適用する
+- `diagnostic`: 実機にトルクを送る操作を避け、診断を中心に使う
 
-## Safety model
+workspace signature は upstream commit、patch set hash、dirty 状態から作ります。signature が変わると、以前の SIM verified は無効として扱います。
 
-Real launch は少なくとも次の条件が揃うまでロックされます。
+## 実機起動のロック
 
-- workspace がbuild済み
-- active policy の provenance が分かる
+Real launch は、必要な確認が揃うまでロックされます。主な確認項目は次の通りです。
+
+- workspace が build 済み
+- active policy の出所が分かる
 - external policy に manifest がある
 - 現在の policy と workspace signature で SIM verified 済み
-- CAN が健全
-- IMU が確認できる
+- CAN / IMU / gamepad が確認できる
 - zero profile が verified
-- operator checklist と `REAL` confirmation が完了
+- operator checklist と `REAL` confirmation が完了している
 - manual recovery が未解決ではない
+
+ロック状態は TUI の dashboard と preflight 画面で確認します。
 
 ## テスト
 
-このプロジェクト自身のテストは `tests/` に限定しています。`third_party/mujina_ros` のROS/ament系テストは、ROS 2 Jazzy 環境で別途扱います。
+このリポジトリの pytest は補助ツール側だけを対象にしています。`third_party/mujina_ros` の ROS / ament 系テストは、ROS 2 Jazzy 環境で別に扱います。
 
 ```bash
 python -m pytest -q
 ```
 
-コンテナ経由の確認:
+コンテナで確認する場合:
 
 ```bash
 ./scripts/run-docker-tests.sh
