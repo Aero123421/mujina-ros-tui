@@ -1,0 +1,16 @@
+{
+  "repo_url": "https://github.com/rt-net/mujina_ros.git",
+  "upstream_commit": "38ff97f12d0ef424dd7fc840d3ce7a1ebad2a49d",
+  "mode": "assisted",
+  "patch_set_hash": "",
+  "dirty": false,
+  "workspace_signature": "",
+  "license": "MIT",
+  "license_file": "third_party/mujina_ros/LICENSE",
+  "copyright": [
+    "Copyright (c) 2024 Kento Kawaharazuka",
+    "Copyright (c) 2025 CoRE-MA-KING",
+    "Copyright (c) 2026 RT Corporation"
+  ],
+  "schema_version": 1
+}
