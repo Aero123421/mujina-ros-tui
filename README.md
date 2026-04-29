@@ -63,6 +63,12 @@ ROS や実機デバイスがない環境では、TUI 上の各チェックは `W
 
 ライセンス表記は `THIRD_PARTY_NOTICES.md` にまとめています。
 
+## license
+
+このリポジトリ本体は MIT License です。ルートの `LICENSE` を参照してください。
+
+同梱している公式 `mujina_ros` も MIT License です。upstream の copyright と license は `third_party/mujina_ros/LICENSE` に残してあり、`THIRD_PARTY_NOTICES.md` にも記載しています。
+
 ## workspace mode
 
 - `vanilla`: 同梱した `mujina_ros` をそのまま `workspace/src/mujina_ros` に配置する
