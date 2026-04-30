@@ -76,6 +76,8 @@ def evaluate_real_preflight(
     _add_if(reasons, not devices.get("/dev/input/js0", False), P1, "joy_missing", "ゲームパッドが未検出です。")
     if can_mode == "serial":
         _add_if(reasons, not devices.get("/dev/usb_can", False), P0, "serial_can_missing", "`/dev/usb_can` が確認できません。")
+        _add_if(reasons, not devices.get("can0", False), P0, "serial_can0_missing", "serial CAN の slcand/can0 が確認できません。")
+        _add_if(reasons, not report.tool_status.get("slcand", False), P0, "slcand_missing", "serial CAN の slcand が確認できません。")
     else:
         _add_if(reasons, not devices.get("can0", False), P0, "can0_missing", "`can0` が確認できません。")
 
@@ -83,7 +85,7 @@ def evaluate_real_preflight(
     if can_check == "ng":
         _add(reasons, P0, "can_unhealthy", "CAN が NG です。")
     elif can_check == "warn":
-        _add(reasons, P1, "can_warning", "CAN が WARN です。")
+        _add(reasons, P0, "can_unhealthy", "CAN が WARN です。")
     _add_if(reasons, bool(active_jobs & {"real_main"}), P0, "real_main_running", "real_main が既に起動しています。")
     _add_if(reasons, bool(active_jobs & {"motor_read", "zero"}), P0, "motor_operation_running", "motor read / zero 操作が実行中です。")
     _add_if(reasons, not operator_checklist_complete, P0, "operator_checklist", "operator checklist が未完了です。")

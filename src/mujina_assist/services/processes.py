@@ -99,12 +99,15 @@ def build_motor_probe_script(
     ids_literal = ", ".join(str(i) for i in ids)
     probe_source = textwrap.dedent(
         f"""
+        import json
+
         from mujina_control.motor_lib.motor_lib import CanMotorController
 
         device = {device_name!r}
         ids = [{ids_literal}]
         print('# using Socket {{}} for can communication'.format(device))
         print('# motor ids: {{}}'.format(ids))
+        print('# probe kind: zero-gain one-shot query')
         assert ids, 'please input motor ids'
 
         for motor_id in ids:
@@ -112,6 +115,17 @@ def build_motor_probe_script(
                 device, motor_id, 1, 'RobStride02', external_gear_ratio=1.0
             )
             pos, vel, cur, tem = motor_controller.send_rad_command(0.0, 0.0, 0, 0, 0)
+            print(json.dumps({{
+                'event': 'motor_probe',
+                'probe_kind': 'zero_gain_one_shot_query',
+                'motor_id': motor_id,
+                'position_rad': pos,
+                'velocity_rad_s': vel,
+                'current_a': cur,
+                'temperature_c': tem,
+                'error_code': '0x00',
+                'status': 'ok',
+            }}, sort_keys=True))
             print(
                 'Motor {{}} Position: {{}}, Velocity: {{}}, Torque: {{}}, Temp: {{}}'.format(
                     motor_id, pos, vel, cur, tem

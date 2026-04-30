@@ -76,7 +76,7 @@ def default_motor_descriptors() -> list[MotorDescriptor]:
     ]
 
 
-def empty_scan_result(*, can_interface: str = "can0", scan_kind: str = "passive") -> MotorScanResult:
+def empty_scan_result(*, can_interface: str = "can0", scan_kind: str = "zero_gain_one_shot_query") -> MotorScanResult:
     entries = [
         MotorScanEntry(joint_name=descriptor.joint_name, motor_id=descriptor.motor_id)
         for descriptor in default_motor_descriptors()
@@ -88,7 +88,7 @@ def build_scan_result(
     entries: list[MotorScanEntry],
     *,
     can_interface: str = "can0",
-    scan_kind: str = "passive",
+    scan_kind: str = "zero_gain_one_shot_query",
     created_at: str | None = None,
 ) -> MotorScanResult:
     motor_ids = [entry.motor_id for entry in entries]
@@ -130,7 +130,7 @@ def load_scan_result(path: Path) -> MotorScanResult:
         schema_version=int(data.get("schema_version", 1)),
         created_at=str(data.get("created_at", "")),
         can_interface=str(data.get("can_interface", "can0")),
-        scan_kind=str(data.get("scan_kind", "passive")),
+        scan_kind=str(data.get("scan_kind", "zero_gain_one_shot_query")),
         motor_ids=[int(value) for value in data.get("motor_ids", [])],
         joint_order=[str(value) for value in data.get("joint_order", [])],
         entries=entries,
@@ -145,27 +145,81 @@ def parse_probe_output(output: str, *, descriptors: list[MotorDescriptor] | None
     by_id = {descriptor.motor_id: descriptor for descriptor in (descriptors or default_motor_descriptors())}
     entries: dict[int, MotorScanEntry] = {}
     for line in output.splitlines():
+        json_entry = _parse_probe_json_line(line, by_id)
+        if json_entry is not None:
+            entries[json_entry.motor_id] = json_entry
+            continue
         match = re.search(
             r"motor\s+(?P<id>\d+):\s+pos=(?P<pos>[-+0-9.eE]+)\s+vel=(?P<vel>[-+0-9.eE]+)\s+cur=(?P<cur>[-+0-9.eE]+)\s+temp=(?P<temp>[-+0-9.eE]+)",
             line,
+            re.IGNORECASE,
         )
-        if not match:
+        if match is None:
+            match = re.search(
+                r"Motor\s+(?P<id>\d+)\s+Position:\s+(?P<pos>[-+0-9.eE]+),\s+Velocity:\s+(?P<vel>[-+0-9.eE]+),\s+Torque:\s+(?P<cur>[-+0-9.eE]+),\s+Temp:\s+(?P<temp>[-+0-9.eE]+)",
+                line,
+            )
+        if match is None:
             continue
-        motor_id = int(match.group("id"))
-        descriptor = by_id.get(motor_id, MotorDescriptor(f"motor_{motor_id}", motor_id, "", ""))
-        entries[motor_id] = MotorScanEntry(
-            joint_name=descriptor.joint_name,
-            motor_id=motor_id,
-            responded=True,
-            position_rad=float(match.group("pos")),
-            velocity_rad_s=float(match.group("vel")),
-            current_a=float(match.group("cur")),
-            temperature_c=float(match.group("temp")),
-            error_code="0x00",
-            zero_state="unknown",
-            status="ok",
-        )
+        entry = _entry_from_match(match, by_id)
+        entries[entry.motor_id] = entry
     return [entries.get(descriptor.motor_id, MotorScanEntry(descriptor.joint_name, descriptor.motor_id)) for descriptor in by_id.values()]
+
+
+def _parse_probe_json_line(line: str, by_id: dict[int, MotorDescriptor]) -> MotorScanEntry | None:
+    try:
+        data = json.loads(line)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    if data.get("event") not in {None, "motor_probe"}:
+        return None
+    try:
+        motor_id = int(data["motor_id"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    descriptor = by_id.get(motor_id, MotorDescriptor(f"motor_{motor_id}", motor_id, "", ""))
+    status = str(data.get("status", "ok"))
+    return MotorScanEntry(
+        joint_name=descriptor.joint_name,
+        motor_id=motor_id,
+        responded=status != "timeout",
+        position_rad=_optional_float(data.get("position_rad", data.get("pos"))),
+        velocity_rad_s=_optional_float(data.get("velocity_rad_s", data.get("vel"))),
+        current_a=_optional_float(data.get("current_a", data.get("cur"))),
+        temperature_c=_optional_float(data.get("temperature_c", data.get("temp"))),
+        error_code=str(data.get("error_code", "0x00")),
+        zero_state=str(data.get("zero_state", "unknown")),
+        status=status,
+        message=str(data.get("message", "")),
+    )
+
+
+def _entry_from_match(match: re.Match[str], by_id: dict[int, MotorDescriptor]) -> MotorScanEntry:
+    motor_id = int(match.group("id"))
+    descriptor = by_id.get(motor_id, MotorDescriptor(f"motor_{motor_id}", motor_id, "", ""))
+    return MotorScanEntry(
+        joint_name=descriptor.joint_name,
+        motor_id=motor_id,
+        responded=True,
+        position_rad=float(match.group("pos")),
+        velocity_rad_s=float(match.group("vel")),
+        current_a=float(match.group("cur")),
+        temperature_c=float(match.group("temp")),
+        error_code="0x00",
+        zero_state="unknown",
+        status="ok",
+    )
+
+
+def _optional_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _atomic_write_json(path: Path, data: dict[str, Any]) -> None:

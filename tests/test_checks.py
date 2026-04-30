@@ -9,6 +9,22 @@ from mujina_assist.models import AppPaths, RuntimeState
 from mujina_assist.services.checks import build_doctor_report, current_policy_label, resolve_imu_port, sim_policy_verified
 
 
+CAN_OK = {
+    "present": True,
+    "operstate": "up",
+    "controller_state": "error-active",
+    "bitrate": 1000000,
+    "rx_errors": 0,
+    "tx_errors": 0,
+    "bus_errors": 0,
+    "bus_off": 0,
+    "txqueuelen": 10,
+    "raw": "",
+    "ok": True,
+    "warn": False,
+}
+
+
 class ChecksTest(unittest.TestCase):
     def test_policy_label_unknown_when_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -107,7 +123,7 @@ class ChecksTest(unittest.TestCase):
                 return_value=True,
             ), patch(
                 "mujina_assist.services.checks.inspect_can_status",
-                return_value={"present": True, "operstate": "up", "controller_state": "error-active", "txqueuelen": 10, "raw": "", "ok": True, "warn": False},
+                return_value=CAN_OK,
             ):
                 report = build_doctor_report(paths, RuntimeState())
 
@@ -145,7 +161,7 @@ class ChecksTest(unittest.TestCase):
                 return_value=True,
             ), patch(
                 "mujina_assist.services.checks.inspect_can_status",
-                return_value={"present": True, "operstate": "up", "controller_state": "error-active", "txqueuelen": 10, "raw": "", "ok": True, "warn": False},
+                return_value=CAN_OK,
             ):
                 report = build_doctor_report(paths, state)
 

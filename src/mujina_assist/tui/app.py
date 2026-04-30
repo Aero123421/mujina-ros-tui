@@ -8,6 +8,7 @@ from mujina_assist.services.checks import current_policy_label, write_config_fil
 from mujina_assist.services.jobs import active_jobs, recent_jobs
 from mujina_assist.services.state import load_runtime_state
 from mujina_assist.tui.screens import SCREEN_CLASSES, TEXTUAL_IMPORT_ERROR
+from mujina_assist.tui.screens import _safety_state, _status_from_reasons
 
 if TEXTUAL_IMPORT_ERROR is None:
     from textual.app import App
@@ -161,11 +162,14 @@ def build_dashboard_model(paths: AppPaths | None, state: RuntimeState | None) ->
             "can": {"status": "unknown", "summary": "CAN未確認"},
             "zero": {"status": "lock", "summary": "zero profile未確認"},
             "policy": {"status": "unknown", "summary": "policy未確認"},
+            "safety": {"real_launch_locked": True, "manual_recovery_required": False, "reasons": []},
             "jobs": {"running": 0, "recent": []},
         }
 
     runtime_state = state or load_runtime_state(paths.runtime_state_file)
     report = build_doctor_report(paths, runtime_state)
+    safety = _safety_state(paths, runtime_state, report)
+    zero_status = _status_from_reasons(safety, {"zero_profile_missing", "zero_profile_invalid", "zero_profile_warning"})
     running_jobs = active_jobs(paths)
     latest_jobs = recent_jobs(paths, limit=5)
     return {
@@ -185,11 +189,23 @@ def build_dashboard_model(paths: AppPaths | None, state: RuntimeState | None) ->
             "can0": report.real_devices.get("can0", False),
             "serial": report.real_devices.get("/dev/usb_can", False),
         },
-        "zero": {"status": "lock", "summary": "zero profile validation は後続実装で接続"},
+        "zero": {
+            "status": zero_status,
+            "summary": "verified zero profile" if zero_status == "ok" else "zero profile未確認",
+        },
         "policy": {
-            "status": "ok" if report.active_policy_hash else "warn",
+            "status": _status_from_reasons(
+                safety,
+                {"policy_unknown", "policy_manifest_missing", "policy_manifest_invalid", "policy_manifest_warning", "sim_unverified"},
+                default="ok" if report.active_policy_hash else "warn",
+            ),
             "label": report.active_policy_label,
             "sim_ready": report.sim_ready,
+        },
+        "safety": {
+            "real_launch_locked": safety.real_launch_locked,
+            "manual_recovery_required": safety.manual_recovery_required,
+            "reasons": [{"priority": reason.priority, "code": reason.code, "message": reason.message} for reason in safety.reasons],
         },
         "jobs": {
             "running": len(running_jobs),

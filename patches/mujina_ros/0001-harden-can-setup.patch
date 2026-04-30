@@ -1,0 +1,17 @@
+--- a/mujina_control/scripts/can_setup_net.sh
++++ b/mujina_control/scripts/can_setup_net.sh
+@@ -1,4 +1,5 @@
+ #!/usr/bin/bash
+-sudo ip link set can0 type can bitrate 1000000
++sudo ip link set can0 down || true
++sudo ip link set can0 type can bitrate 1000000 restart-ms 100
+ #sudo slcand -o -c -s8 /dev/usb_can can0
+ sudo ip link set up can0
+--- a/mujina_control/scripts/can_setup_serial.sh
++++ b/mujina_control/scripts/can_setup_serial.sh
+@@ -1,3 +1,5 @@
+ #!/usr/bin/bash
++sudo ip link set can0 down || true
++sudo ip link delete can0 || true
+ sudo slcand -o -c -s8 /dev/usb_can can0
+ sudo ip link set up can0

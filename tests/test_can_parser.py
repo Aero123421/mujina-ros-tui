@@ -16,7 +16,7 @@ REQUIRED_CAN_API = (
 
 
 IP_DETAILS_STATISTICS_SAMPLE = """\
-4: can0: <NOARP,UP,LOWER_UP,ECHO> mtu 16 qdisc pfifo_fast state UNKNOWN mode DEFAULT group default qlen 10
+4: can0: <NOARP,UP,LOWER_UP,ECHO> mtu 16 qdisc pfifo_fast state UP mode DEFAULT group default qlen 10
     link/can  promiscuity 0 allmulti 0 minmtu 0 maxmtu 0
     can state ERROR-ACTIVE (berr-counter tx 0 rx 0) restart-ms 100
           bitrate 1000000 sample-point 0.750
@@ -25,6 +25,8 @@ IP_DETAILS_STATISTICS_SAMPLE = """\
           4816     1204      0       0       0       0
     TX:  bytes packets errors dropped carrier collsns
           4808     1202      0       0       0       0
+    bus-errors arbit-lost error-warn error-pass bus-off
+             0          0          0          0       0
 """
 
 
@@ -44,7 +46,7 @@ class CanParserTest(unittest.TestCase):
         status = self._api("parse_ip_details_statistics")(IP_DETAILS_STATISTICS_SAMPLE)
 
         self.assertEqual(status.interface, "can0")
-        self.assertEqual(status.operstate, "unknown")
+        self.assertEqual(status.operstate, "up")
         self.assertEqual(status.controller_state, "error-active")
         self.assertEqual(status.bitrate, 1000000)
         self.assertEqual(status.restart_ms, 100)

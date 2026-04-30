@@ -150,6 +150,7 @@ def build_doctor_report(paths: AppPaths, state: RuntimeState) -> DoctorReport:
     serial_candidates = list_serial_device_candidates()
     imu_port, imu_fallback, _ = resolve_imu_port()
     can_status = inspect_can_status()
+    can_health = can_service.evaluate_can_health(can_status)
 
     active_policy_hash = file_hash(paths.source_policy_path) if paths.source_policy_path.exists() else ""
     current_workspace_signature = workspace_signature(paths)
@@ -208,8 +209,9 @@ def build_doctor_report(paths: AppPaths, state: RuntimeState) -> DoctorReport:
         DoctorCheck(
             "can",
             "CAN",
-            "ok" if can_status["ok"] else ("warn" if devices.get("can0", False) or devices.get("/dev/usb_can", False) else "warn"),
-            _can_summary(devices, can_status),
+            "ok" if can_health.ok else ("ng" if can_health.present else "warn"),
+            _can_summary(devices, can_status, can_health.reasons),
+            details=can_health.reasons,
         ),
         DoctorCheck(
             "joy",
@@ -236,7 +238,7 @@ def build_doctor_report(paths: AppPaths, state: RuntimeState) -> DoctorReport:
         notes.append(f"IMU は固定名ではなく代替ポート {imu_port} を使う見込みです。")
     if serial_candidates and (not devices.get("/dev/usb_can", False) or not devices.get("/dev/rt_usb_imu", False)):
         notes.append("汎用 USB シリアル候補は見えています。固定名デバイスが出ない場合は udev ルールと VID/PID を確認してください。")
-    if can_status["present"] and not can_status["ok"]:
+    if can_health.present and not can_health.ok:
         notes.append("can0 は見えていますが、現在の状態は健全ではありません。電源再投入後は公式の can_setup 手順をやり直してください。")
     if devices.get("/dev/input/js0", False):
         notes.append("gamepad の認識だけでは不十分です。Logicool F710 / F310 の X mode、MODE LED OFF を確認してください。")
@@ -251,7 +253,7 @@ def build_doctor_report(paths: AppPaths, state: RuntimeState) -> DoctorReport:
         and devices.get("/dev/input/js0", False)
         and imu_port
         and not imu_fallback
-        and (devices.get("can0", False) or devices.get("/dev/usb_can", False))
+        and can_health.ok
     ):
         recommendation = "実機前チェックは概ね整っています。所定姿勢を確認してから進めてください。"
     elif workspace_built and active_policy_hash:
@@ -293,13 +295,16 @@ def _real_setup_summary(setup_status: dict[str, bool]) -> str:
     return " / ".join(parts)
 
 
-def _can_summary(devices: dict[str, bool], can_status: dict[str, object]) -> str:
+def _can_summary(devices: dict[str, bool], can_status: dict[str, object], reasons: list[str] | None = None) -> str:
     if devices.get("can0", False):
         operstate = can_status.get("operstate") or "unknown"
         controller_state = can_status.get("controller_state") or "unknown"
+        bitrate = can_status.get("bitrate") or "unknown"
         txq = can_status.get("txqueuelen")
         suffix = f" / qlen={txq}" if isinstance(txq, int) else ""
-        return f"can0: operstate={operstate}, controller={controller_state}{suffix}"
+        if reasons:
+            suffix = f"{suffix} / " + "; ".join(reasons)
+        return f"can0: operstate={operstate}, controller={controller_state}, bitrate={bitrate}{suffix}"
     if devices.get("/dev/usb_can", False):
-        return "/dev/usb_can が見えています"
+        return "/dev/usb_can は見えています。serial CAN も slcand と can0 health の確認が必要です。"
     return "CAN デバイスが未検出です"

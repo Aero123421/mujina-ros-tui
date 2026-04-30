@@ -17,8 +17,9 @@ from mujina_assist.services.shell import CommandResult, shell_quote
 UPSTREAM_METADATA_SCHEMA_VERSION = 1
 VANILLA_MODE = "vanilla"
 ASSISTED_MODE = "assisted"
+DIAGNOSTIC_MODE = "diagnostic"
 WORKSPACE_IGNORED_NAMES = {".git", ".mujina-upstream.json"}
-WorkspaceMode = Literal["vanilla", "assisted"]
+WorkspaceMode = Literal["vanilla", "assisted", "diagnostic"]
 
 
 @dataclass(slots=True)
@@ -168,14 +169,16 @@ def build_workspace_signature(
     patch_set_hash: str,
     dirty: bool,
     mode: str = ASSISTED_MODE,
+    workspace_tree_hash: str = "",
 ) -> str:
-    if not upstream_commit and not patch_set_hash and not dirty:
+    if not upstream_commit and not patch_set_hash and not dirty and not workspace_tree_hash:
         return ""
     suffix = "-dirty" if dirty else "-clean"
     patch_label = patch_set_hash if patch_set_hash else "no-patches"
     commit_label = upstream_commit if upstream_commit else "unknown-upstream"
     mode_label = mode or ASSISTED_MODE
-    return f"{commit_label}+{mode_label}+patches={patch_label}{suffix}"
+    tree_label = workspace_tree_hash if workspace_tree_hash else "unknown-tree"
+    return f"{commit_label}+{mode_label}+patches={patch_label}+tree={tree_label}{suffix}"
 
 
 def current_workspace_metadata(paths: AppPaths) -> UpstreamMetadata:
@@ -190,6 +193,7 @@ def current_workspace_metadata(paths: AppPaths) -> UpstreamMetadata:
         patch_set_hash=patches_hash if metadata.mode == ASSISTED_MODE else "",
         dirty=dirty,
         mode=metadata.mode or ASSISTED_MODE,
+        workspace_tree_hash=metadata.workspace_tree_hash,
     )
     metadata.upstream_commit = upstream_commit
     metadata.patch_set_hash = patches_hash
@@ -232,7 +236,7 @@ def prepare_workspace(
     repo_url: str = "",
 ) -> WorkspacePreparationResult:
     command = f"prepare vendored mujina_ros ({mode})"
-    if mode not in {VANILLA_MODE, ASSISTED_MODE}:
+    if mode not in {VANILLA_MODE, ASSISTED_MODE, DIAGNOSTIC_MODE}:
         return WorkspacePreparationResult(command, 2, mode, stderr=f"unknown workspace mode: {mode}")
     if not vendored_upstream_exists(paths):
         return WorkspacePreparationResult(
@@ -269,6 +273,7 @@ def prepare_workspace(
             patch_set_hash=patches_hash,
             dirty=False,
             mode=mode,
+            workspace_tree_hash=workspace_tree_hash,
         )
         metadata = UpstreamMetadata(
             repo_url=repo_url,
@@ -296,7 +301,7 @@ def prepare_workspace(
             upstream_commit=upstream_commit,
             patch_set_hash=patches_hash,
             applied_patches=applied_patches,
-            stdout=f"prepared workspace from {paths.vendored_upstream_dir}",
+            stdout=_prepare_workspace_stdout(paths.vendored_upstream_dir, mode, applied_patches),
         )
     except Exception as exc:
         if tmp_dir.exists():
@@ -319,6 +324,13 @@ def copy_vendored_upstream_to_workspace(paths: AppPaths, *, replace: bool = Fals
 
 def apply_upstream_patches(paths: AppPaths) -> list[Path]:
     return apply_patch_queue(paths.upstream_dir, paths.upstream_patches_dir)
+
+
+def _prepare_workspace_stdout(vendored_dir: Path, mode: str, applied_patches: list[Path]) -> str:
+    lines = [f"prepared workspace from {vendored_dir}"]
+    if mode == ASSISTED_MODE and not applied_patches:
+        lines.append("warning: assisted mode selected but patch queue is empty")
+    return "\n".join(lines)
 
 
 def apply_patch_queue(workspace_dir: Path, patch_dir: Path) -> list[Path]:

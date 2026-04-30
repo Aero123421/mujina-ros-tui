@@ -4,6 +4,8 @@
 
 `mujina_ros` をセットアップ、診断、起動前確認までまとめて扱うための日本語 TUI です。
 
+この repository では改行を LF に正規化します。Windows で作業する場合も、この checkout では `git config core.autocrlf false` を推奨します。
+
 公式の `mujina_ros` は `third_party/mujina_ros` に固定 commit で同梱しています。この repository は公式 package の置き換えではなく、作業用 workspace の生成、状態確認、policy / zero profile の確認、実機起動前のロック条件表示をまとめる補助ツールです。
 
 ## できること
@@ -141,9 +143,9 @@ mujina-ros-tui/
 | --- | --- |
 | `vanilla` | 同梱した `mujina_ros` をそのまま `workspace/src/mujina_ros` に配置する |
 | `assisted` | 配置後に `patches/mujina_ros` の patch queue を適用する |
-| `diagnostic` | 実機にトルクを送る操作を避け、診断を中心に使う |
+| `diagnostic` | 同梱 upstream を clean copy として配置し、実機にトルクを送る操作を避ける診断用 workspace として記録する |
 
-workspace signature は upstream commit、patch set hash、dirty 状態から作ります。signature が変わると、以前の SIM verified は無効として扱います。
+workspace signature は upstream commit、mode、patch set hash、workspace tree hash、dirty 状態から作ります。signature が変わると、以前の SIM verified は無効として扱います。
 
 ## 実機起動のロック
 

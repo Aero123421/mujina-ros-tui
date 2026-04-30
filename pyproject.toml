@@ -8,10 +8,32 @@ version = "0.1.0"
 description = "Japanese guided CLI for setting up and operating mujina_ros"
 readme = "README.md"
 requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+    { name = "mujina-ros-tui contributors" },
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: System :: Hardware",
+]
 dependencies = [
     "rich>=13,<14",
     "textual>=0.80,<1",
     "typing-extensions>=4.10",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8,<9",
+    "pytest-timeout>=2.3,<3",
 ]
 
 [project.scripts]

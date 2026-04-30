@@ -22,6 +22,7 @@ from mujina_assist.services.checks import (
     workspace_clone_ready,
     write_config_file,
 )
+from mujina_assist.services.can import detect_slcand_processes, evaluate_can_health, slcand_summary
 from mujina_assist.services.jobs import (
     acquire_job_claim,
     active_jobs,
@@ -37,6 +38,7 @@ from mujina_assist.services.jobs import (
     summarize_job,
     update_job,
 )
+from mujina_assist.services.motors import build_scan_result, parse_probe_output, save_scan_result
 from mujina_assist.services.policy import (
     activate_policy,
     all_policy_candidates,
@@ -80,7 +82,11 @@ from mujina_assist.ui import (
     title,
     warn,
 )
-from mujina_assist.services.zero import load_active_zero_profile, validate_zero_profile
+from mujina_assist.services.zero import (
+    load_active_zero_profile,
+    save_verified_zero_profile_from_scan,
+    validate_zero_profile,
+)
 
 WORKER_CLAIM_TIMEOUT_SECONDS = 5.0
 WORKER_CLAIM_POLL_SECONDS = 0.1
@@ -501,8 +507,14 @@ class MujinaAssistApp:
         if not report.real_devices:
             report.real_devices = detect_real_devices()
         if imu_port:
+            fixed_imu = imu_port == "/dev/rt_usb_imu"
             report.imu_port_label = imu_port
-            report.imu_port_fallback = False
+            report.imu_port_fallback = not fixed_imu
+            if not fixed_imu:
+                error("実機起動では固定名 `/dev/rt_usb_imu` が必要です。")
+                bullet(f"代替候補 {imu_port} は診断では使えますが、real launch はロックします。")
+                bullet("udev ルールで IMU を固定名にしてから再実行してください。")
+                return 1
         if not report.sim_ready:
             error("現在の workspace + policy では SIM確認済みの記録がありません。")
             bullet("先に `SIM` を起動し、同じ条件で姿勢と入力応答を確認してから `SIM確認済み` を付けてください。")
@@ -537,22 +549,36 @@ class MujinaAssistApp:
                 kind="real_imu",
                 name=f"実機 IMU ノード ({Path(imu_port).name})",
                 group_id=group_id,
-                payload={"imu_port": imu_port},
+                payload={"imu_port": imu_port, "stage": 1, "wait_for": "/imu/data"},
             ),
             create_job(
                 self.paths,
                 kind="real_main",
                 name="実機 mujina_main",
                 group_id=group_id,
-                payload={"can_mode": selected_can_mode},
+                payload={"can_mode": selected_can_mode, "stage": 2, "wait_for": "/robot_mode"},
             ),
-            create_job(self.paths, kind="real_joy", name="実機 joy ノード", group_id=group_id),
+            create_job(
+                self.paths,
+                kind="real_joy",
+                name="実機 joy ノード",
+                group_id=group_id,
+                payload={"stage": 3, "wait_for": "/joy"},
+            ),
         ]
-        result = self._launch_job_group(jobs, heading="実機用ジョブを起動しました。")
+        result = self._launch_real_job_group(jobs)
         if result == 0:
             self.state.last_action = "real_launch"
             self.save_state()
         return result
+
+    def _launch_real_job_group(self, jobs: list[JobRecord]) -> int:
+        section("段階起動")
+        bullet("1/3 IMU node を起動します。起動後は `/imu/data` の live health を必ず確認してください。")
+        bullet("2/3 mujina_main を起動します。起動後は `/robot_mode` / motor state を確認してください。")
+        bullet("3/3 joy node を起動します。起動後は `/joy` の axes/buttons を確認してください。")
+        bullet("現時点では topic wait の自動監視は未接続です。TUI では LOCK/WARN として表示します。")
+        return self._launch_job_group(jobs, heading="実機用ジョブを段階順に起動しました。")
 
     def handle_policy_menu(self) -> int:
         title("policy を切り替える")
@@ -1060,7 +1086,7 @@ class MujinaAssistApp:
                 ],
             )
             return preflight_result.returncode, "原点位置設定の前提確認に失敗しました。", False
-        return self._execute_shell_job(
+        zero_result = self._execute_shell_job(
             job,
             build_zero_script(self.paths, ids, can_mode, include_can_setup=False),
             "原点位置設定が完了しました。",
@@ -1074,6 +1100,71 @@ class MujinaAssistApp:
             ],
             allow_sigint_stop=False,
         )
+        if zero_result[0] != 0:
+            return zero_result
+        post_scan_result = self._run_post_zero_scan_and_save_profile(job, can_mode)
+        if post_scan_result[0] != 0:
+            return post_scan_result
+        return zero_result
+
+    def _run_post_zero_scan_and_save_profile(self, job: JobRecord, can_mode: str) -> tuple[int, str, bool]:
+        post_scan_log_path = job_log_path(job).with_suffix(".post-zero-scan.log")
+        result = run_bash(
+            build_motor_probe_script(self.paths, DEFAULT_MOTOR_IDS, can_mode, include_can_setup=False),
+            cwd=self.paths.workspace_dir,
+            log_path=post_scan_log_path,
+            interactive=True,
+        )
+        if result.returncode == 130:
+            warn("post-zero 確認を中断しました。")
+            bullet(f"ログ: {post_scan_log_path}")
+            return 130, "post-zero 確認を中断しました。", True
+        if result.returncode != 0:
+            self._report_failure(
+                "post-zero 確認に失敗しました。",
+                post_scan_log_path,
+                causes=[
+                    "原点設定後の one-shot query に失敗しています。",
+                    "一部モータが応答していません。",
+                ],
+                next_steps=[
+                    "ログを確認し、全 12 軸が応答する状態で再実行してください。",
+                    "verified zero profile は保存されていません。",
+                ],
+            )
+            return result.returncode, "post-zero 確認に失敗しました。", False
+        try:
+            output = post_scan_log_path.read_text(encoding="utf-8", errors="ignore")
+            scan_result = build_scan_result(
+                parse_probe_output(output),
+                can_interface="can0",
+                scan_kind="zero_gain_one_shot_query",
+            )
+            scan_path = post_scan_log_path.with_suffix(".json")
+            save_scan_result(scan_path, scan_result)
+            profile_path = save_verified_zero_profile_from_scan(
+                self.paths,
+                scan_result,
+                upstream_commit=self.state.workspace_upstream_commit,
+                patch_set_hash=self.state.workspace_patch_set_hash,
+            )
+        except Exception as exc:
+            self._report_failure(
+                "post-zero profile の保存に失敗しました。",
+                post_scan_log_path,
+                causes=[
+                    "post-zero scan の解析結果が全 12 軸 verified 条件を満たしていません。",
+                    "原点位置誤差が閾値を超えています。",
+                ],
+                next_steps=[
+                    "post-zero scan JSON とログを確認してください。",
+                    "verified zero profile は保存されていません。",
+                ],
+            )
+            return 1, f"post-zero profile の保存に失敗しました: {exc}", False
+        success("post-zero 確認から verified zero profile を保存しました。")
+        bullet(f"profile: {profile_path}")
+        return 0, "post-zero 確認から verified zero profile を保存しました。", False
 
     def _execute_shell_job(
         self,
@@ -1289,8 +1380,7 @@ class MujinaAssistApp:
         devices = detect_real_devices()
         required: list[str] = []
         if include_imu:
-            imu_port, _fallback, _candidates = resolve_imu_port()
-            required.append("/dev/rt_usb_imu" if imu_port is None else imu_port)
+            required.append("/dev/rt_usb_imu")
         if include_joy:
             required.append("/dev/input/js0")
         required.append("can0" if can_mode == "net" else "/dev/usb_can")
@@ -1304,17 +1394,22 @@ class MujinaAssistApp:
         return missing
 
     def _ensure_can_mode_ready(self, can_mode: str) -> bool:
-        if can_mode != "net":
-            return True
         can_status = inspect_can_status()
-        if not can_status.get("present", False):
-            return True
-        if can_status.get("ok", False):
+        can_health = evaluate_can_health(can_status)
+        if can_mode == "serial" and not detect_slcand_processes(interface="can0", device="/dev/usb_can"):
+            error("serial CAN の slcand が `/dev/usb_can` -> `can0` で動いていません。")
+            bullet(f"slcand: {slcand_summary(interface='can0', device='/dev/usb_can')}")
+            bullet("公式の serial CAN setup 手順をやり直してから再実行してください。")
+            return False
+        if can_health.ok:
             return True
         error("can0 は見えていますが、現在の状態は健全ではありません。")
         operstate = str(can_status.get("operstate") or "unknown")
         controller_state = str(can_status.get("controller_state") or "unknown")
-        bullet(f"operstate={operstate}, controller_state={controller_state}")
+        bitrate = str(can_status.get("bitrate") or "unknown")
+        bullet(f"operstate={operstate}, controller_state={controller_state}, bitrate={bitrate}")
+        for reason in can_health.reasons:
+            bullet(reason)
         bullet("電源再投入後に公式の can_setup 手順をやり直してから再実行してください。")
         return False
 
@@ -1454,7 +1549,11 @@ class MujinaAssistApp:
             return True, ""
         if candidate.manifest_path is None or not candidate.manifest_path.exists():
             return False, "manifest が無く、robot revision や学習条件を検証できません。manifest 付き policy を使ってください。"
-        validation = validate_policy_manifest(candidate.manifest_path, policy_path=candidate.path)
+        validation = validate_policy_manifest(
+            candidate.manifest_path,
+            policy_path=candidate.path,
+            require_real_world_approved=True,
+        )
         if not validation.ok:
             return False, "manifest が実機投入条件を満たしていません: " + " / ".join(validation.errors)
         return True, ""
@@ -1465,7 +1564,11 @@ class MujinaAssistApp:
             return None
         if candidate.manifest_path is None or not candidate.manifest_path.exists():
             return None
-        return validate_policy_manifest(candidate.manifest_path, policy_path=candidate.path)
+        return validate_policy_manifest(
+            candidate.manifest_path,
+            policy_path=candidate.path,
+            require_real_world_approved=True,
+        )
 
     def _active_zero_profile_validation(self):
         try:

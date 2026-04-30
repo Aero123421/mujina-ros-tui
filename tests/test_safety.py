@@ -30,7 +30,9 @@ def _ready_report() -> DoctorReport:
 
 class SafetyTest(unittest.TestCase):
     def test_real_preflight_unlocks_when_p0_conditions_are_clear(self) -> None:
-        zero = validate_zero_profile(new_zero_profile(post_zero_max_abs_position_rad=0.01))
+        zero = validate_zero_profile(
+            new_zero_profile(result="verified", operator_confirmed=True, post_zero_max_abs_position_rad=0.01)
+        )
 
         safety = evaluate_real_preflight(
             _ready_report(),
@@ -56,7 +58,9 @@ class SafetyTest(unittest.TestCase):
         report = _ready_report()
         report.active_policy_label = "USB: custom.onnx"
         report.active_policy_source = "/tmp/custom.onnx"
-        zero = validate_zero_profile(new_zero_profile(post_zero_max_abs_position_rad=0.01))
+        zero = validate_zero_profile(
+            new_zero_profile(result="verified", operator_confirmed=True, post_zero_max_abs_position_rad=0.01)
+        )
 
         safety = evaluate_real_preflight(
             report,
@@ -67,6 +71,47 @@ class SafetyTest(unittest.TestCase):
         )
 
         self.assertIn("policy_manifest_missing", {reason.code for reason in p0_reasons(safety)})
+
+    def test_real_preflight_blocks_imu_fallback_without_fixed_name(self) -> None:
+        report = _ready_report()
+        report.real_devices["/dev/rt_usb_imu"] = False
+        report.imu_port_label = "/dev/ttyACM0"
+        report.imu_port_fallback = True
+        zero = validate_zero_profile(new_zero_profile(post_zero_max_abs_position_rad=0.01))
+
+        safety = evaluate_real_preflight(
+            report,
+            RuntimeState(),
+            zero_profile=zero,
+            operator_checklist_complete=True,
+            real_confirmation="REAL",
+        )
+
+        self.assertIn("imu_missing", {reason.code for reason in p0_reasons(safety)})
+
+    def test_serial_can_requires_slcand_can0_and_ok_can_check(self) -> None:
+        report = _ready_report()
+        report.real_devices["/dev/usb_can"] = True
+        report.real_devices["can0"] = False
+        report.tool_status["slcand"] = False
+        report.checks = [DoctorCheck("can", "CAN", "warn", "/dev/usb_can only")]
+        zero = validate_zero_profile(
+            new_zero_profile(result="verified", operator_confirmed=True, post_zero_max_abs_position_rad=0.01)
+        )
+
+        safety = evaluate_real_preflight(
+            report,
+            RuntimeState(),
+            zero_profile=zero,
+            can_mode="serial",
+            operator_checklist_complete=True,
+            real_confirmation="REAL",
+        )
+
+        codes = {reason.code for reason in p0_reasons(safety)}
+        self.assertIn("serial_can0_missing", codes)
+        self.assertIn("slcand_missing", codes)
+        self.assertIn("can_unhealthy", codes)
 
 
 if __name__ == "__main__":

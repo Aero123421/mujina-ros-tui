@@ -195,6 +195,19 @@ class DoctorReport:
 
 
 @dataclass(slots=True)
+class LiveHealth:
+    can_ok: bool = False
+    can_summary: str = ""
+    imu_ok: bool = False
+    imu_summary: str = ""
+    joy_ok: bool = False
+    joy_summary: str = ""
+    ros_available: bool = False
+    ros_summary: str = ""
+    warnings: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
 class PolicyCacheEntry:
     policy_hash: str
     blob_path: str

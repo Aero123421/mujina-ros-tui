@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from mujina_assist.models import AppPaths, DEFAULT_MOTOR_IDS
+from mujina_assist.services.motors import MotorScanResult
 from mujina_assist.services.policy_manifest import DEFAULT_JOINT_ORDER
 
 
@@ -45,9 +46,9 @@ def new_zero_profile(
     can_interface: str = "can0",
     motor_ids: list[int] | None = None,
     joint_order: list[str] | None = None,
-    result: str = "verified",
-    operator_confirmed: bool = True,
-    post_zero_max_abs_position_rad: float = 0.0,
+    result: str = "pending",
+    operator_confirmed: bool = False,
+    post_zero_max_abs_position_rad: float = 999.0,
     source: str = "mujina_assist",
 ) -> ZeroProfile:
     return ZeroProfile(
@@ -96,6 +97,63 @@ def save_zero_profile(paths: AppPaths, profile: ZeroProfile, *, activate: bool =
     if activate:
         _atomic_write_json(paths.active_zero_profile_file, asdict(profile))
     return target
+
+
+def save_verified_zero_profile_from_scan(
+    paths: AppPaths,
+    scan_result: MotorScanResult,
+    *,
+    upstream_commit: str = "",
+    patch_set_hash: str = "",
+    operator_confirmed: bool = True,
+    activate: bool = True,
+    source: str = "post_zero_scan",
+) -> Path:
+    profile = verified_zero_profile_from_scan(
+        scan_result,
+        upstream_commit=upstream_commit,
+        patch_set_hash=patch_set_hash,
+        operator_confirmed=operator_confirmed,
+        source=source,
+    )
+    return save_zero_profile(paths, profile, activate=activate)
+
+
+def verified_zero_profile_from_scan(
+    scan_result: MotorScanResult,
+    *,
+    upstream_commit: str = "",
+    patch_set_hash: str = "",
+    operator_confirmed: bool = True,
+    source: str = "post_zero_scan",
+) -> ZeroProfile:
+    if not operator_confirmed:
+        raise ValueError("operator confirmation is required for a verified zero profile")
+    if scan_result.schema_version != 1:
+        raise ValueError("post-zero scan schema_version must be 1")
+    if scan_result.motor_ids != DEFAULT_MOTOR_IDS:
+        raise ValueError("post-zero scan motor_ids do not match Mujina defaults")
+    if scan_result.joint_order != DEFAULT_JOINT_ORDER:
+        raise ValueError("post-zero scan joint_order does not match Mujina defaults")
+    if not scan_result.summary.get("ok", False):
+        raise ValueError("post-zero scan is not OK")
+    positions = [entry.position_rad for entry in scan_result.entries if entry.responded and entry.position_rad is not None]
+    if len(positions) != len(DEFAULT_MOTOR_IDS):
+        raise ValueError("post-zero scan does not contain all motor positions")
+    max_abs_position = max(abs(position) for position in positions)
+    if max_abs_position > MAX_POST_ZERO_ABS_POSITION_RAD:
+        raise ValueError(f"post-zero position error is too large: {max_abs_position:.3f} rad")
+    return new_zero_profile(
+        upstream_commit=upstream_commit,
+        patch_set_hash=patch_set_hash,
+        can_interface=scan_result.can_interface,
+        motor_ids=scan_result.motor_ids,
+        joint_order=scan_result.joint_order,
+        result="verified",
+        operator_confirmed=operator_confirmed,
+        post_zero_max_abs_position_rad=max_abs_position,
+        source=source,
+    )
 
 
 def load_active_zero_profile(paths: AppPaths) -> ZeroProfile | None:

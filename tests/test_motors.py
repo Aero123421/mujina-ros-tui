@@ -58,6 +58,28 @@ motor 11: pos=0.002 vel=0.001 cur=0.200 temp=31.9
         self.assertEqual(entries[1].motor_id, 11)
         self.assertEqual(entries[2].status, "timeout")
 
+    def test_parse_probe_output_accepts_upstream_probe_format(self) -> None:
+        output = "Motor 10 Position: -0.003, Velocity: 0.0, Torque: 0.1, Temp: 32.1\n"
+
+        entries = parse_probe_output(output)
+
+        self.assertTrue(entries[0].responded)
+        self.assertEqual(entries[0].position_rad, -0.003)
+        self.assertEqual(entries[0].current_a, 0.1)
+
+    def test_parse_probe_output_accepts_jsonl(self) -> None:
+        output = (
+            '{"event": "motor_probe", "motor_id": 10, "position_rad": -0.004, '
+            '"velocity_rad_s": 0.0, "current_a": 0.1, "temperature_c": 32.1, '
+            '"error_code": "0x00", "status": "ok"}\n'
+        )
+
+        entries = parse_probe_output(output)
+
+        self.assertTrue(entries[0].responded)
+        self.assertEqual(entries[0].position_rad, -0.004)
+        self.assertEqual(entries[0].temperature_c, 32.1)
+
 
 if __name__ == "__main__":
     unittest.main()

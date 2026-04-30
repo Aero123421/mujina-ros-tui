@@ -13,6 +13,9 @@ from mujina_assist.services.checks import (
     list_serial_device_candidates,
 )
 from mujina_assist.services.jobs import active_jobs, list_jobs, recent_jobs, summarize_job
+from mujina_assist.services.policy_manifest import validate_policy_manifest
+from mujina_assist.services.safety import SafetyState, evaluate_real_preflight
+from mujina_assist.services.zero import validate_zero_profile
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -71,6 +74,53 @@ def _badge(status: str) -> str:
 
 def _yn(value: bool) -> str:
     return "[green]OK[/]" if value else "[red]missing[/]"
+
+
+def _reason_status(priority: str) -> str:
+    return {"P0": "lock", "P1": "warn", "P2": "wait"}.get(priority, "warn")
+
+
+def _safety_state(paths: "AppPaths", state: "RuntimeState", report: "DoctorReport") -> SafetyState:
+    manifest = _active_policy_manifest_validation(report)
+    zero_profile = validate_zero_profile(paths.active_zero_profile_file) if paths.active_zero_profile_file.exists() else None
+    return evaluate_real_preflight(
+        report,
+        state,
+        policy_manifest=manifest,
+        zero_profile=zero_profile,
+        can_mode="net",
+        active_job_kinds={job.kind for job in active_jobs(paths)},
+        operator_checklist_complete=False,
+        real_confirmation="",
+    )
+
+
+def _active_policy_manifest_validation(report: "DoctorReport"):
+    label = report.active_policy_label or ""
+    source = report.active_policy_source or ""
+    if label in {"", "未設定", "公式デフォルト"}:
+        return None
+    normalized_source = source.replace("\\", "/")
+    if "default_policy.onnx" in normalized_source:
+        return None
+    if not source:
+        return None
+    policy_path = Path(source)
+    manifest_path = policy_path.with_suffix(".manifest.json")
+    if not manifest_path.exists():
+        return None
+    return validate_policy_manifest(manifest_path, policy_path=policy_path)
+
+
+def _status_from_reasons(safety: SafetyState, reason_codes: set[str], *, default: str = "ok") -> str:
+    matched = [reason for reason in safety.reasons if reason.code in reason_codes]
+    if any(reason.priority == "P0" for reason in matched):
+        return "lock"
+    if any(reason.priority == "P1" for reason in matched):
+        return "warn"
+    if any(reason.priority == "P2" for reason in matched):
+        return "wait"
+    return default
 
 
 def _add_rows(table: Table, rows: "Iterable[tuple[str, str, str]]") -> Table:
@@ -138,7 +188,7 @@ if TEXTUAL_IMPORT_ERROR is None:
                 Static(id="dashboard-title", classes="screen-heading"),
                 Horizontal(
                     Vertical(Static(id="status-summary"), Static(id="lock-summary"), Static(id="job-summary"), classes="pane", id="left-pane"),
-                    Vertical(Static(id="flow-list"), Static(id="detail-pane"), classes="pane", id="right-pane"),
+                    Vertical(ListView(id="flow-list"), Static(id="detail-pane"), classes="pane", id="right-pane"),
                     id="dashboard-grid",
                 ),
                 classes="screen-body",
@@ -149,23 +199,41 @@ if TEXTUAL_IMPORT_ERROR is None:
             self._refresh()
             self.set_interval(2.0, self._refresh)
 
-        def _flow_items(self, report: "DoctorReport") -> list[FlowItem]:
+        def _flow_items(self, report: "DoctorReport", safety: SafetyState) -> list[FlowItem]:
+            policy_status = _status_from_reasons(
+                safety,
+                {"policy_unknown", "sim_unverified", "policy_manifest_missing", "policy_manifest_invalid", "policy_manifest_warning"},
+                default="ok" if report.active_policy_hash else "warn",
+            )
+            can_status = _status_from_reasons(
+                safety,
+                {"can0_missing", "serial_can_missing", "can_unhealthy", "can_warning"},
+                default="ok" if report.real_devices.get("can0") else "warn",
+            )
+            imu_status = _status_from_reasons(safety, {"imu_missing"}, default="ok" if report.imu_port_label else "warn")
+            zero_status = _status_from_reasons(
+                safety,
+                {"zero_profile_missing", "zero_profile_invalid", "zero_profile_warning"},
+                default="ok",
+            )
+            preflight_status = "lock" if safety.real_launch_locked else ("warn" if safety.standup_locked else "ok")
             return [
                 FlowItem("setup", "Setup", "ok" if report.workspace_cloned else "warn", "workspace / upstream 準備"),
-                FlowItem("device", "Device", "ok" if report.imu_port_label else "warn", "IMU / USB-CAN / joy"),
-                FlowItem("can", "CAN", "ok" if report.real_devices.get("can0") else "warn", "SocketCAN / serial CAN"),
-                FlowItem("motor", "Motor", "wait", "12軸の passive scan"),
-                FlowItem("zero", "Zero", "lock", "zero profile / post verification"),
-                FlowItem("policy", "Policy", "ok" if report.active_policy_hash else "warn", report.active_policy_label),
+                FlowItem("device", "Device", imu_status, "IMU / USB-CAN / joy"),
+                FlowItem("can", "CAN", can_status, "SocketCAN / serial CAN"),
+                FlowItem("motor", "Motor", "wait", "12軸の zero-gain one-shot query"),
+                FlowItem("zero", "Zero", zero_status, "zero profile / post verification"),
+                FlowItem("policy", "Policy", policy_status, report.active_policy_label),
                 FlowItem("simulation", "Simulation", "ok" if report.sim_ready else "warn", "policy変更後のSIM確認"),
-                FlowItem("real-preflight", "Real Preflight", "lock" if not report.sim_ready else "warn", "P0/P1/P2確認"),
-                FlowItem("real-launch", "Real Launch", "lock", "段階起動"),
+                FlowItem("real-preflight", "Real Preflight", preflight_status, "P0/P1/P2確認"),
+                FlowItem("real-launch", "Real Launch", "lock" if safety.real_launch_locked else "warn", "段階起動"),
                 FlowItem("logs", "Logs", "wait", "job log tail"),
                 FlowItem("help", "Help", "ok", "keybind一覧"),
             ]
 
         def _refresh(self) -> None:
             report = self.doctor_report()
+            safety = _safety_state(self.paths, self.state, report)
             self.query_one("#dashboard-title", Static).update(
                 "[b]Mujina Assist[/b]  [dim]実機運用コックピット[/dim]\n"
                 f"[dim]workspace={'ready' if report.workspace_cloned else 'missing'}  "
@@ -190,17 +258,11 @@ if TEXTUAL_IMPORT_ERROR is None:
                 status_lines.extend(["", f"[b]Next[/b]  {report.recommendation}"])
             self.query_one("#status-summary", Static).update("\n".join(status_lines))
 
-            locks = ["[b]Launch Locks[/b]"]
-            if not report.workspace_built:
-                locks.append("- build が未完了")
-            if not report.active_policy_hash:
-                locks.append("- active policy が未設定")
-            if not report.sim_ready:
-                locks.append("- SIM確認が未完了")
-            if not report.imu_port_label:
-                locks.append("- IMU が未検出")
-            if not (report.real_devices.get("can0") or report.real_devices.get("/dev/usb_can")):
-                locks.append("- CAN が未検出")
+            locks = ["[b]Launch Locks[/b]  [dim]evaluate_real_preflight[/dim]"]
+            if safety.manual_recovery_required:
+                locks.append(f"{_badge('lock')} P0 manual recovery: {safety.manual_recovery_summary or '未解決'}")
+            for reason in safety.reasons:
+                locks.append(f"{_badge(_reason_status(reason.priority))} {reason.priority} {reason.code}: {reason.message}")
             if len(locks) == 1:
                 locks.append("[green]- P0 blockなし。Preflightへ進めます。[/]")
             self.query_one("#lock-summary", Static).update("\n".join(locks[:7]))
@@ -213,13 +275,25 @@ if TEXTUAL_IMPORT_ERROR is None:
                 job_lines.append("- 実行中ジョブなし")
             self.query_one("#job-summary", Static).update("\n".join(job_lines))
 
-            flow_lines = ["[b]Flow[/b]"]
-            for item in self._flow_items(report):
-                flow_lines.append(f"{_badge(item.status)}  [b]{item.label:<15}[/b] [dim]{item.summary}[/dim]")
-            self.query_one("#flow-list", Static).update("\n".join(flow_lines))
+            flow = self.query_one("#flow-list", ListView)
+            highlighted_key = ""
+            if flow.highlighted_child is not None:
+                highlighted_key = getattr(flow.highlighted_child, "mujina_key", "")
+            flow.clear()
+            new_index = 0
+            for index, item in enumerate(self._flow_items(report, safety)):
+                row = ListItem(Label(f"{_status_icon(item.status):<4} {item.label:<15} {item.summary}"))
+                row.mujina_key = item.key
+                flow.append(row)
+                if item.key == highlighted_key:
+                    new_index = index
+            flow.index = new_index
 
             details = ["[b]Doctor Checks[/b]"]
             details.extend(f"- {_badge(check.status)} [b]{check.label}[/b]: {check.summary}" for check in report.checks)
+            if safety.reasons:
+                details.append("\n[b]Safety Reasons[/b]")
+                details.extend(f"- {reason.priority} {reason.code}: {reason.message}" for reason in safety.reasons[:8])
             if report.notes:
                 details.append("\n[b]Notes[/b]")
                 details.extend(f"- {note}" for note in report.notes[:5])
@@ -228,7 +302,7 @@ if TEXTUAL_IMPORT_ERROR is None:
         def on_list_view_selected(self, event: ListView.Selected) -> None:
             key = getattr(event.item, "mujina_key", "")
             if key:
-                self.app.open_screen(key)
+                self.app.action_open_screen(key)
 
 
     class SetupFlowScreen(MujinaBaseScreen):
@@ -250,7 +324,7 @@ if TEXTUAL_IMPORT_ERROR is None:
                 ("OS確認", "ok" if report.ubuntu_24_04 else "warn", report.os_label),
                 ("ROS 2 Jazzy確認", "ok" if report.ros_installed else "ng", "導入済み" if report.ros_installed else "未導入"),
                 ("workspace準備", "ok" if report.workspace_cloned else "ng", "clone済み" if report.workspace_cloned else "未作成"),
-                ("patch適用状態確認", "wait", "assisted patch queue は未接続"),
+                ("patch適用状態確認", "ok" if self.state.workspace_patch_set_hash else "warn", self.state.workspace_patch_set_hash or "patch queue なし"),
                 ("colcon build", "ok" if report.workspace_built else "warn", "完了" if report.workspace_built else "未実行"),
                 ("udev / dialout", "warn", "実機用設定を確認"),
                 ("device確認", "ok" if report.imu_port_label else "warn", report.imu_port_label or "IMU未検出"),
@@ -321,7 +395,7 @@ if TEXTUAL_IMPORT_ERROR is None:
 
         def compose(self) -> ComposeResult:
             yield Header(show_clock=True)
-            yield Container(self.header("Motor", "12軸 passive scan の表示骨格"), DataTable(id="motor-table"), classes="screen-body")
+            yield Container(self.header("Motor", "12軸 zero-gain one-shot query の表示骨格"), DataTable(id="motor-table"), classes="screen-body")
             yield Footer()
 
         def on_mount(self) -> None:
@@ -345,7 +419,10 @@ if TEXTUAL_IMPORT_ERROR is None:
             table = self.query_one("#skeleton-table", DataTable)
             table.add_columns("Item", "Status", "Summary")
             _add_rows(table, self.ITEMS)
-            self.query_one("#skeleton-note", Static).update("[dim]この画面は骨格です。実処理は既存service/job層へ段階的に接続します。[/dim]")
+            self.query_one("#skeleton-note", Static).update(
+                "[yellow]未接続の骨格画面です。ここに表示される WAIT/LOCK は実機安全判定ではありません。[/yellow]\n"
+                "[dim]実際のロック状態は Dashboard / Real Preflight の evaluate_real_preflight 表示を確認してください。[/dim]"
+            )
 
 
     class ZeroWizardScreen(SkeletonScreen):
@@ -354,7 +431,7 @@ if TEXTUAL_IMPORT_ERROR is None:
         ITEMS = [
             ("CAN状態確認", "wait", "can0 healthy required"),
             ("対象motor選択", "wait", "all / leg / single"),
-            ("passive scan", "wait", "torqueを出さない診断"),
+            ("zero-gain one-shot query", "wait", "kp/kd/tau=0 の一回問い合わせ"),
             ("operator checklist", "lock", "所定姿勢と停止手段"),
             ("upstream zero script", "lock", "motor_set_zero_position.py"),
             ("zero profile保存", "wait", "post-zero verification後に保存"),
@@ -387,15 +464,28 @@ if TEXTUAL_IMPORT_ERROR is None:
     class RealPreflightScreen(SkeletonScreen):
         SCREEN_TITLE = "Real Preflight"
         SCREEN_SUMMARY = "P0/P1/P2 lock reasons"
-        ITEMS = [
-            ("Build", "lock", "workspace build required"),
-            ("Policy", "lock", "provenance / manifest / SIM verified"),
-            ("CAN", "lock", "error-active required"),
-            ("IMU", "lock", "fixed device and topic required"),
-            ("Motors", "lock", "12/12 response required"),
-            ("Zero profile", "lock", "verified profile required"),
-            ("Operator", "lock", "REAL confirmation required"),
-        ]
+
+        def on_mount(self) -> None:
+            self._refresh()
+            self.set_interval(2.0, self._refresh)
+
+        def _refresh(self) -> None:
+            report = self.doctor_report()
+            safety = _safety_state(self.paths, self.state, report)
+            table = self.query_one("#skeleton-table", DataTable)
+            table.clear(columns=True)
+            table.add_columns("Priority", "Status", "Code", "Summary")
+            if safety.reasons:
+                for reason in safety.reasons:
+                    table.add_row(reason.priority, _status_icon(_reason_status(reason.priority)), reason.code, reason.message)
+            else:
+                table.add_row("-", "OK", "clear", "P0/P1/P2 reason はありません。")
+            note = "[b]Real Launch[/b] " + (_badge("lock") if safety.real_launch_locked else _badge("ok"))
+            note += "  [b]Standup[/b] " + (_badge("lock") if safety.standup_locked else _badge("ok"))
+            note += "  [b]Walk[/b] " + (_badge("lock") if safety.walk_locked else _badge("ok"))
+            if safety.manual_recovery_required:
+                note += f"\n[red]manual recovery required:[/] {safety.manual_recovery_summary or '未解決'}"
+            self.query_one("#skeleton-note", Static).update(note)
 
 
     class RealLaunchScreen(SkeletonScreen):
@@ -404,7 +494,7 @@ if TEXTUAL_IMPORT_ERROR is None:
         ITEMS = [
             ("CAN setup", "wait", "net / serial"),
             ("IMU node", "wait", "wait /imu/data"),
-            ("passive motor scan", "lock", "main起動前"),
+            ("zero-gain motor query", "lock", "main起動前"),
             ("mujina_main", "lock", "wait /robot_mode"),
             ("joy node", "lock", "wait /joy"),
             ("standup unlock", "lock", "operator確認後"),
@@ -441,7 +531,7 @@ if TEXTUAL_IMPORT_ERROR is None:
                     "\n".join(
                         [
                             "[b]Navigation[/b]",
-                            "Enter: flow項目を開く",
+                            "Enter: Dashboard の選択中 flow 項目を開く",
                             "d: Dashboard / Doctor",
                             "s: Setup",
                             "p: Policy",

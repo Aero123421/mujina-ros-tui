@@ -23,6 +23,8 @@ class ProcessScriptTest(unittest.TestCase):
             self.assertIn("can_setup_serial.sh", script)
             self.assertIn("python3 - <<'PY'", script)
             self.assertIn("Motor probe completed.", script)
+            self.assertIn("zero-gain one-shot query", script)
+            self.assertIn("'event': 'motor_probe'", script)
             self.assertIn("ids = [1, 2]", script)
             self.assertNotIn("while True", script)
 

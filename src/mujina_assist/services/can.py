@@ -152,15 +152,23 @@ def evaluate_can_health(status: CanLinkStatus | dict[str, object]) -> CanHealth:
     reasons: list[str] = []
     if not status.present:
         reasons.append(f"{status.interface} is missing")
-    if status.controller_state in {"bus-off", "error-passive", "stopped"}:
-        reasons.append(f"controller state is {status.controller_state}")
-    if status.bitrate is None and status.present:
+    if status.present and (status.operstate or "").lower() != "up":
+        reasons.append(f"operstate is {status.operstate or 'unknown'}")
+    if status.present and (status.controller_state or "").lower() != "error-active":
+        reasons.append(f"controller state is {status.controller_state or 'unknown'}")
+    if status.bitrate != 1_000_000 and status.present:
         reasons.append("bitrate is unknown")
-    if (status.rx_errors or 0) > 0 or (status.tx_errors or 0) > 0:
-        reasons.append(f"errors rx={status.rx_errors or 0} tx={status.tx_errors or 0}")
-    if (status.bus_errors or 0) > 0 or (status.bus_off or 0) > 0:
-        reasons.append(f"bus errors={status.bus_errors or 0} bus-off={status.bus_off or 0}")
-    ok = status.present and status.ok and not reasons
+        if status.bitrate is not None:
+            reasons[-1] = f"bitrate is {status.bitrate}, expected 1000000"
+    for label, value in (
+        ("rx_errors", status.rx_errors),
+        ("tx_errors", status.tx_errors),
+        ("bus_errors", status.bus_errors),
+        ("bus_off", status.bus_off),
+    ):
+        if status.present and value != 0:
+            reasons.append(f"{label} is {value if value is not None else 'unknown'}")
+    ok = status.present and not reasons
     warn = status.present and not ok
     return CanHealth(present=status.present, ok=ok, warn=warn, reasons=reasons)
 
@@ -210,15 +218,9 @@ def _parse_packet_stats(raw: str, status: CanLinkStatus) -> None:
 
 
 def _derive_health(status: CanLinkStatus) -> None:
-    state = (status.controller_state or "").lower()
-    operstate = (status.operstate or "").lower()
-    unhealthy_states = {"stopped", "bus-off", "error-passive", "error-warning"}
-    if status.present and operstate in {"up", "unknown"} and state not in unhealthy_states:
-        status.ok = True
-        status.warn = False
-    elif status.present:
-        status.ok = False
-        status.warn = True
+    health = evaluate_can_health(status)
+    status.ok = health.ok
+    status.warn = health.warn
 
 
 def _int_after(line: str, key: str) -> int | None:

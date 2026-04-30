@@ -53,8 +53,10 @@ class TextualTuiSmokeTest(unittest.TestCase):
 
         model = build_dashboard_model(paths=None, state=None)
 
-        for key in ("workspace", "devices", "can", "zero", "policy", "jobs"):
+        for key in ("workspace", "devices", "can", "zero", "policy", "safety", "jobs"):
             self.assertIn(key, model)
+
+        self.assertTrue(model["safety"]["real_launch_locked"])
 
 
 if __name__ == "__main__":

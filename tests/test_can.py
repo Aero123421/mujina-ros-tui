@@ -23,7 +23,8 @@ class CanServiceTest(unittest.TestCase):
     def test_parse_ip_details_statistics_extracts_can_fields(self) -> None:
         status = parse_ip_details_statistics(IP_DETAILS, present=True)
 
-        self.assertTrue(status.ok)
+        self.assertFalse(status.ok)
+        self.assertTrue(status.warn)
         self.assertEqual(status.operstate, "up")
         self.assertEqual(status.controller_state, "error-active")
         self.assertEqual(status.bitrate, 1000000)
@@ -37,6 +38,17 @@ class CanServiceTest(unittest.TestCase):
         self.assertEqual(status.bus_off, 0)
         self.assertEqual(status.berr_tx, 1)
         self.assertEqual(status.berr_rx, 2)
+
+    def test_parse_ip_details_statistics_requires_strict_clean_error_active_can0(self) -> None:
+        raw = IP_DETAILS.replace("tx 1 rx 2", "tx 0 rx 0")
+        raw = raw.replace("80      3", "80      0")
+        raw = raw.replace("64      4", "64      0")
+        raw = raw.replace("5          0", "0          0")
+
+        status = parse_ip_details_statistics(raw, present=True)
+
+        self.assertTrue(status.ok)
+        self.assertFalse(status.warn)
 
     def test_parse_ip_details_statistics_warns_on_bus_off(self) -> None:
         raw = IP_DETAILS.replace("ERROR-ACTIVE", "BUS-OFF").replace("state UP", "state DOWN")

@@ -94,22 +94,33 @@ class UpstreamTest(unittest.TestCase):
             upstream_commit="38ff97f12d0ef424dd7fc840d3ce7a1ebad2a49d",
             patch_set_hash="patches-abc",
             dirty=False,
+            workspace_tree_hash="tree-abc",
         )
         other_patch = build_workspace_signature(
             upstream_commit="38ff97f12d0ef424dd7fc840d3ce7a1ebad2a49d",
             patch_set_hash="patches-def",
             dirty=False,
+            workspace_tree_hash="tree-abc",
         )
         dirty = build_workspace_signature(
             upstream_commit="38ff97f12d0ef424dd7fc840d3ce7a1ebad2a49d",
             patch_set_hash="patches-abc",
             dirty=True,
+            workspace_tree_hash="tree-abc",
+        )
+        other_tree = build_workspace_signature(
+            upstream_commit="38ff97f12d0ef424dd7fc840d3ce7a1ebad2a49d",
+            patch_set_hash="patches-abc",
+            dirty=False,
+            workspace_tree_hash="tree-def",
         )
 
         self.assertNotEqual(clean, other_patch)
         self.assertNotEqual(clean, dirty)
+        self.assertNotEqual(clean, other_tree)
         self.assertIn("38ff97f12d0ef424dd7fc840d3ce7a1ebad2a49d", clean)
         self.assertIn("patches-abc", clean)
+        self.assertIn("tree=tree-abc", clean)
         self.assertIn("dirty", dirty)
 
     def test_prepare_workspace_can_keep_vanilla_or_apply_assisted_patches(self) -> None:
@@ -148,6 +159,27 @@ class UpstreamTest(unittest.TestCase):
             )
             self.assertTrue(assisted.patched)
             self.assertEqual(assisted.patch_count, 1)
+
+            diagnostic = prepare_workspace(paths, mode="diagnostic")
+            self.assertEqual(diagnostic.returncode, 0, diagnostic.stderr)
+            self.assertFalse(diagnostic.patched)
+            self.assertIn("+diagnostic+", diagnostic.workspace_signature)
+
+    def test_assisted_mode_warns_when_patch_queue_is_empty(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = AppPaths.from_repo_root(Path(tmp))
+            vendored = self._api("vendored_upstream_path")(paths)
+            prepare_workspace = self._api("prepare_workspace_from_vendored_upstream")
+
+            (vendored / ".mujina-upstream.json").parent.mkdir(parents=True)
+            (vendored / ".mujina-upstream.json").write_text('{"upstream_commit":"commit-a"}\n', encoding="utf-8")
+            (vendored / "README.md").write_text("official upstream\n", encoding="utf-8")
+
+            assisted = prepare_workspace(paths, mode="assisted")
+
+            self.assertEqual(assisted.returncode, 0, assisted.stderr)
+            self.assertFalse(assisted.patched)
+            self.assertIn("patch queue is empty", assisted.stdout)
 
     def test_workspace_dirty_invalidates_sim_verified_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

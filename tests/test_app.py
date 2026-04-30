@@ -12,6 +12,19 @@ from mujina_assist.services.jobs import create_job, list_jobs, update_job
 from mujina_assist.services.zero import new_zero_profile, save_zero_profile
 
 
+CAN_OK = {
+    "present": True,
+    "ok": True,
+    "operstate": "up",
+    "controller_state": "error-active",
+    "bitrate": 1000000,
+    "rx_errors": 0,
+    "tx_errors": 0,
+    "bus_errors": 0,
+    "bus_off": 0,
+}
+
+
 class AppTest(unittest.TestCase):
     def _prepare_built_workspace(self, app: MujinaAssistApp) -> None:
         app.paths.upstream_dir.mkdir(parents=True, exist_ok=True)
@@ -22,6 +35,13 @@ class AppTest(unittest.TestCase):
         install_dir = app.paths.workspace_dir / "install" / "mujina_control"
         install_dir.mkdir(parents=True, exist_ok=True)
         (app.paths.workspace_dir / "install" / "setup.bash").write_text("", encoding="utf-8")
+
+    def _write_successful_probe_log(self, log_path: Path) -> None:
+        lines = [
+            f'{{"event": "motor_probe", "motor_id": {motor_id}, "position_rad": 0.01, "velocity_rad_s": 0.0, "current_a": 0.0, "temperature_c": 31.0, "error_code": "0x00", "status": "ok"}}'
+            for motor_id in [10, 11, 12, 7, 8, 9, 4, 5, 6, 1, 2, 3]
+        ]
+        log_path.write_text("\n".join(lines) + "\nMotor probe completed.\n", encoding="utf-8")
 
     def test_missing_devices_for_serial_mode_only_requires_serial_can(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -39,7 +59,7 @@ class AppTest(unittest.TestCase):
 
             self.assertEqual(missing, [])
 
-    def test_missing_devices_accepts_generic_imu_fallback(self) -> None:
+    def test_missing_devices_blocks_generic_imu_fallback_for_real_preflight(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             app = MujinaAssistApp(Path(tmp))
             generic_imu = app.paths.repo_root / "ttyACM0"
@@ -58,7 +78,7 @@ class AppTest(unittest.TestCase):
             ):
                 missing = app._missing_devices_for_can_mode("serial", include_imu=True, include_joy=True)
 
-            self.assertEqual(missing, [])
+            self.assertEqual(missing, ["/dev/rt_usb_imu"])
 
     def test_select_can_mode_prefers_available_requested_mode(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -184,9 +204,15 @@ class AppTest(unittest.TestCase):
             self._prepare_built_workspace(app)
             job = create_job(app.paths, kind="zero", name="zero (3)", payload={"ids": [3], "can_mode": "serial"})
 
+            def run_bash_side_effect(*args, **kwargs):
+                log_path = kwargs["log_path"]
+                if log_path.suffix == ".log" and "post-zero-scan" in log_path.name:
+                    self._write_successful_probe_log(log_path)
+                return SimpleNamespace(returncode=0)
+
             with patch(
                 "mujina_assist.app.run_bash",
-                return_value=SimpleNamespace(returncode=0),
+                side_effect=run_bash_side_effect,
             ) as run_bash_mock, patch.object(
                 app,
                 "_execute_shell_job",
@@ -195,9 +221,12 @@ class AppTest(unittest.TestCase):
                 result = app._execute_zero_job(job)
 
             self.assertEqual(result, (0, "ok", False))
-            self.assertIn("Motor probe completed.", run_bash_mock.call_args.args[0])
-            self.assertIn("can_setup_serial.sh", run_bash_mock.call_args.args[0])
-            self.assertEqual(run_bash_mock.call_args.kwargs["log_path"], Path(job.log_path).with_suffix(".preflight.log"))
+            self.assertEqual(run_bash_mock.call_count, 2)
+            self.assertIn("Motor probe completed.", run_bash_mock.call_args_list[0].args[0])
+            self.assertIn("can_setup_serial.sh", run_bash_mock.call_args_list[0].args[0])
+            self.assertEqual(run_bash_mock.call_args_list[0].kwargs["log_path"], Path(job.log_path).with_suffix(".preflight.log"))
+            self.assertIn("ids = [10, 11, 12, 7, 8, 9, 4, 5, 6, 1, 2, 3]", run_bash_mock.call_args_list[1].args[0])
+            self.assertTrue(app.paths.active_zero_profile_file.exists())
             self.assertIn("motor_set_zero_position.py", execute_shell_job_mock.call_args.args[1])
             self.assertIn("--device can0", execute_shell_job_mock.call_args.args[1])
             self.assertNotIn("can_setup_serial.sh", execute_shell_job_mock.call_args.args[1])
@@ -396,14 +425,17 @@ class AppTest(unittest.TestCase):
             self.assertEqual(result, 1)
             launch_group_mock.assert_not_called()
 
-    def test_handle_real_robot_uses_generic_imu_fallback_port(self) -> None:
+    def test_handle_real_robot_blocks_generic_imu_fallback_port(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             app = MujinaAssistApp(Path(tmp))
             self._prepare_built_workspace(app)
             app.state.active_policy_hash = "abc"
             app.state.last_sim_success = True
             app.state.last_sim_policy_hash = "abc"
-            save_zero_profile(app.paths, new_zero_profile(post_zero_max_abs_position_rad=0.01))
+            save_zero_profile(
+                app.paths,
+                new_zero_profile(result="verified", operator_confirmed=True, post_zero_max_abs_position_rad=0.01),
+            )
             generic_imu = app.paths.repo_root / "ttyACM0"
             generic_imu.write_text("", encoding="utf-8")
 
@@ -418,7 +450,6 @@ class AppTest(unittest.TestCase):
                 sim_ready=True,
                 tool_status={"slcand": True},
             )
-            launched_jobs = []
             with patch.object(app, "_select_can_mode", return_value="serial"), patch(
                 "mujina_assist.app.build_doctor_report",
                 return_value=report,
@@ -426,12 +457,6 @@ class AppTest(unittest.TestCase):
                 app,
                 "_active_policy_real_world_ready",
                 return_value=(True, ""),
-            ), patch(
-                "mujina_assist.app.ask_yes_no",
-                side_effect=[True, True, True, True, True],
-            ), patch(
-                "mujina_assist.app.ask_text",
-                return_value="REAL",
             ), patch(
                 "mujina_assist.app.detect_real_devices",
                 return_value={
@@ -443,20 +468,14 @@ class AppTest(unittest.TestCase):
             ), patch(
                 "mujina_assist.app.resolve_imu_port",
                 return_value=(str(generic_imu), True, [str(generic_imu)]),
-            ), patch(
-                "mujina_assist.app.evaluate_real_preflight",
-                return_value=SimpleNamespace(reasons=[]),
             ), patch.object(
                 app,
                 "_launch_job_group",
-                side_effect=lambda jobs, heading: launched_jobs.extend(jobs) or 0,
-            ):
+            ) as launch_group_mock:
                 result = app.handle_real_robot()
 
-            self.assertEqual(result, 0)
-            imu_jobs = [job for job in launched_jobs if job.kind == "real_imu"]
-            self.assertEqual(len(imu_jobs), 1)
-            self.assertEqual(imu_jobs[0].payload["imu_port"], str(generic_imu))
+            self.assertEqual(result, 1)
+            launch_group_mock.assert_not_called()
 
     def test_handle_real_robot_blocks_when_sim_is_not_verified(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -495,7 +514,7 @@ class AppTest(unittest.TestCase):
                 return_value=("/dev/rt_usb_imu", False, []),
             ), patch(
                 "mujina_assist.app.inspect_can_status",
-                return_value={"present": True, "ok": True, "operstate": "up", "controller_state": "error-active"},
+                return_value=CAN_OK,
             ):
                 result = app.handle_real_robot()
 
@@ -539,7 +558,7 @@ class AppTest(unittest.TestCase):
                 return_value=("/dev/rt_usb_imu", False, []),
             ), patch(
                 "mujina_assist.app.inspect_can_status",
-                return_value={"present": True, "ok": True, "operstate": "up", "controller_state": "error-active"},
+                return_value=CAN_OK,
             ):
                 result = app.handle_real_robot()
 
