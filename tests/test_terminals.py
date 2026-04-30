@@ -43,13 +43,63 @@ class TerminalsTest(unittest.TestCase):
             self.assertTrue(result.ok)
             self.assertEqual(result.mode, "tmux")
 
+    def test_launch_job_prefers_tmux_inside_wsl(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = AppPaths.from_repo_root(Path(tmp))
+            paths.ensure_directories()
+            job = create_job(paths, kind="setup", name="初回セットアップ")
+
+            with patch("mujina_assist.services.terminals.running_in_wsl", return_value=True), patch(
+                "mujina_assist.services.terminals.command_exists",
+                side_effect=lambda name: name == "tmux",
+            ), patch(
+                "mujina_assist.services.terminals._launch_in_tmux",
+                return_value=(True, ""),
+            ), patch("mujina_assist.services.terminals._launch_in_graphical_terminal") as gui_mock:
+                result = launch_job(paths, job)
+
+            self.assertTrue(result.ok)
+            self.assertEqual(result.mode, "tmux")
+            self.assertIn("WSL", result.message)
+            gui_mock.assert_not_called()
+
+    def test_launch_job_falls_back_to_tmux_when_gui_terminal_exits_immediately(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = AppPaths.from_repo_root(Path(tmp))
+            paths.ensure_directories()
+            job = create_job(paths, kind="build", name="workspace build")
+
+            with patch("mujina_assist.services.terminals.running_in_wsl", return_value=False), patch(
+                "mujina_assist.services.terminals.has_graphical_session",
+                return_value=True,
+            ), patch(
+                "mujina_assist.services.terminals.terminal_backends",
+                return_value=["x-terminal-emulator"],
+            ), patch(
+                "mujina_assist.services.terminals._launch_in_graphical_terminal",
+                return_value=(None, "No suitable files for '9x18' found"),
+            ), patch(
+                "mujina_assist.services.terminals.command_exists",
+                side_effect=lambda name: name == "tmux",
+            ), patch(
+                "mujina_assist.services.terminals._launch_in_tmux",
+                return_value=(True, ""),
+            ):
+                result = launch_job(paths, job)
+
+            self.assertTrue(result.ok)
+            self.assertEqual(result.mode, "tmux")
+
     def test_launch_job_returns_terminal_pid_for_graphical_backend(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             paths = AppPaths.from_repo_root(Path(tmp))
             paths.ensure_directories()
             job = create_job(paths, kind="build", name="workspace build")
 
-            with patch("mujina_assist.services.terminals.has_graphical_session", return_value=True), patch(
+            with patch("mujina_assist.services.terminals.running_in_wsl", return_value=False), patch(
+                "mujina_assist.services.terminals.has_graphical_session",
+                return_value=True,
+            ), patch(
                 "mujina_assist.services.terminals.terminal_backends",
                 return_value=["gnome-terminal"],
             ), patch(

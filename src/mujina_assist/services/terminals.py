@@ -5,6 +5,7 @@ import shlex
 import signal
 import stat
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -33,6 +34,14 @@ def terminal_backends() -> list[str]:
         if command_exists(name):
             backends.append(name)
     return backends
+
+
+def running_in_wsl() -> bool:
+    try:
+        version = Path("/proc/version").read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return False
+    return "microsoft" in version.lower() or "wsl" in version.lower()
 
 
 def write_worker_script(paths: AppPaths, job: JobRecord) -> Path:
@@ -72,6 +81,19 @@ exec bash
 def launch_job(paths: AppPaths, job: JobRecord) -> TerminalLaunch:
     script_path = write_worker_script(paths, job)
     failure_reasons: list[str] = []
+    if running_in_wsl() and command_exists("tmux"):
+        session_name = _tmux_session_name(job)
+        launched, reason = _launch_in_tmux(session_name, script_path, paths.repo_root)
+        if reason:
+            failure_reasons.append(f"tmux ({session_name}): {reason}")
+        if launched:
+            return TerminalLaunch(
+                ok=True,
+                mode="tmux",
+                label=session_name,
+                message=f"WSL のため tmux セッション {session_name} で {job.name} を起動しました。",
+                failure_reasons=[],
+            )
     if has_graphical_session():
         for backend in terminal_backends():
             launched, reason = _launch_in_graphical_terminal(backend, script_path, job.name, paths.repo_root)
@@ -157,7 +179,20 @@ def _launch_in_graphical_terminal(
     if not command:
         return None, f"対応していないバックエンドです: {backend}"
     try:
-        return subprocess.Popen(command, cwd=str(cwd), text=True, start_new_session=True), ""
+        process = subprocess.Popen(
+            command,
+            cwd=str(cwd),
+            text=True,
+            start_new_session=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        time.sleep(0.3)
+        if process.poll() is not None:
+            stdout, stderr = process.communicate(timeout=0.2)
+            detail = "\n".join(part.strip() for part in (stderr, stdout) if part and part.strip())
+            return None, detail or f"起動直後に終了しました: exit={process.returncode}"
+        return process, ""
     except OSError as exc:
         return None, f"{exc.__class__.__name__}: {exc}"
     except subprocess.SubprocessError as exc:
