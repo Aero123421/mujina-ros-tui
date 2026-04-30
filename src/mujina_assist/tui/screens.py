@@ -13,7 +13,7 @@ from mujina_assist.services.checks import (
     inspect_can_status,
     list_serial_device_candidates,
 )
-from mujina_assist.services.jobs import active_jobs, list_jobs, recent_jobs, summarize_job
+from mujina_assist.services.jobs import active_jobs, list_jobs, recent_jobs, stale_jobs, summarize_job
 from mujina_assist.services.policy_manifest import validate_policy_manifest
 from mujina_assist.services.safety import SafetyState, evaluate_real_preflight
 from mujina_assist.services.zero import validate_zero_profile
@@ -269,11 +269,16 @@ if TEXTUAL_IMPORT_ERROR is None:
             self.query_one("#lock-summary", Static).update("\n".join(locks[:7]))
 
             jobs = active_jobs(self.paths)
+            stale = stale_jobs(self.paths)
             job_lines = ["[b]Running Jobs[/b]"]
             if jobs:
                 job_lines.extend(f"- {job.name} ({job.kind})" for job in jobs[:6])
             else:
                 job_lines.append("- 実行中ジョブなし")
+            if stale:
+                job_lines.append("")
+                job_lines.append("[b]Needs Attention[/b]")
+                job_lines.extend(f"- {job.name}: {job.status} stale" for job in stale[:3])
             self.query_one("#job-summary", Static).update("\n".join(job_lines))
 
             flow = self.query_one("#flow-list", ListView)
@@ -661,9 +666,11 @@ if TEXTUAL_IMPORT_ERROR is None:
         def on_mount(self) -> None:
             jobs = list_jobs(self.paths)
             table = self.query_one("#jobs-table", DataTable)
+            stale = {job.job_id for job in stale_jobs(self.paths)}
             table.add_columns("Job", "Status", "Log")
             for job in jobs[:12]:
-                table.add_row(job.name, job.status, Path(job.log_path).name)
+                status = f"{job.status} / stale" if job.job_id in stale else job.status
+                table.add_row(job.name, status, Path(job.log_path).name)
             recent = recent_jobs(self.paths, limit=1)
             if recent:
                 lines = _tail(Path(recent[0].log_path))

@@ -4,6 +4,11 @@ import importlib
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
+
+from mujina_assist.models import AppPaths
+from mujina_assist.services.jobs import create_job, update_job
+from mujina_assist.services.state import load_runtime_state
 
 
 try:
@@ -57,6 +62,23 @@ class TextualTuiSmokeTest(unittest.TestCase):
             self.assertIn(key, model)
 
         self.assertTrue(model["safety"]["real_launch_locked"])
+
+    def test_dashboard_model_reports_stale_jobs(self) -> None:
+        build_dashboard_model = getattr(tui_app_module, "build_dashboard_model", None)
+        if build_dashboard_model is None:
+            self.skipTest("mujina_assist.tui.app.build_dashboard_model(paths, state) is not implemented yet")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = AppPaths.from_repo_root(Path(tmp))
+            paths.ensure_directories()
+            state = load_runtime_state(paths.runtime_state_file)
+            job = create_job(paths, kind="setup", name="initial setup")
+            update_job(job, terminal_mode="terminal", terminal_pid=999999)
+
+            with patch("mujina_assist.services.jobs._pid_alive", return_value=False):
+                model = build_dashboard_model(paths=paths, state=state)
+
+        self.assertEqual(model["jobs"]["stale"], 1)
 
 
 if __name__ == "__main__":

@@ -36,6 +36,7 @@ from mujina_assist.services.jobs import (
     recent_jobs,
     release_job_claim,
     summarize_job,
+    stale_queued_jobs,
     stale_running_jobs,
     update_job,
 )
@@ -184,6 +185,7 @@ class MujinaAssistApp:
 
         running_jobs = active_jobs(self.paths)
         stale_jobs = stale_running_jobs(self.paths)
+        stale_queued = stale_queued_jobs(self.paths)
         if running_jobs:
             section("実行中ジョブ")
             for job in running_jobs[:8]:
@@ -193,6 +195,13 @@ class MujinaAssistApp:
             section("stale job")
             for job in stale_jobs[:5]:
                 bullet(f"{job.name}: running 記録はありますが terminal/tmux が確認できません。ログ確認後に停止扱いへ整理してください。")
+        if stale_queued:
+            section("起動未完了ジョブ")
+            for job in stale_queued[:5]:
+                bullet(
+                    f"{job.name}: queued のまま worker が開始していません。"
+                    f"ログ: {Path(job.log_path).name} / 必要なら再実行してください。"
+                )
 
         completed_jobs = [job for job in recent_jobs(self.paths, limit=8) if job.status not in {"queued", "running"}]
         if completed_jobs:

@@ -5,7 +5,16 @@ from pathlib import Path
 from mujina_assist.models import AppPaths, RuntimeState
 from mujina_assist.services.checks import build_doctor_report
 from mujina_assist.services.checks import current_policy_label, write_config_file
-from mujina_assist.services.jobs import active_jobs, create_job, mark_job_finished, recent_jobs, update_job
+from mujina_assist.services.jobs import (
+    active_jobs,
+    create_job,
+    job_is_stale,
+    list_jobs,
+    mark_job_finished,
+    recent_jobs,
+    stale_jobs,
+    update_job,
+)
 from mujina_assist.services.state import load_runtime_state
 from mujina_assist.services.terminals import launch_job
 from mujina_assist.tui.screens import SCREEN_CLASSES, TEXTUAL_IMPORT_ERROR
@@ -90,7 +99,7 @@ if TEXTUAL_IMPORT_ERROR is None:
         }
 
         #job-summary {
-            height: 7;
+            height: 9;
         }
 
         #detail-pane {
@@ -150,6 +159,19 @@ if TEXTUAL_IMPORT_ERROR is None:
             self.exit()
 
         def launch_tui_job(self, *, kind: str, name: str, payload: dict | None = None) -> None:
+            conflicts = [
+                job
+                for job in list_jobs(self.paths)
+                if job.kind == kind and job.status in {"queued", "running"} and not job_is_stale(job)
+            ]
+            if conflicts:
+                existing = conflicts[0]
+                self.notify(
+                    f"{existing.name} が {existing.status} です。Logsで状態を確認してから再実行してください。",
+                    severity="warning",
+                    timeout=8,
+                )
+                return
             job = create_job(self.paths, kind=kind, name=name, payload=payload or {})
             launch = launch_job(self.paths, job)
             if not launch.ok:
@@ -186,6 +208,7 @@ def build_dashboard_model(paths: AppPaths | None, state: RuntimeState | None) ->
     safety = _safety_state(paths, runtime_state, report)
     zero_status = _status_from_reasons(safety, {"zero_profile_missing", "zero_profile_invalid", "zero_profile_warning"})
     running_jobs = active_jobs(paths)
+    stale_job_records = stale_jobs(paths)
     latest_jobs = recent_jobs(paths, limit=5)
     return {
         "workspace": {
@@ -224,6 +247,7 @@ def build_dashboard_model(paths: AppPaths | None, state: RuntimeState | None) ->
         },
         "jobs": {
             "running": len(running_jobs),
+            "stale": len(stale_job_records),
             "recent": [job.name for job in latest_jobs],
         },
     }

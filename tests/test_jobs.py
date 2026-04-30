@@ -18,6 +18,8 @@ from mujina_assist.services.jobs import (
     recent_jobs,
     release_job_claim,
     save_job,
+    stale_jobs,
+    stale_queued_jobs,
     summarize_job,
     update_job,
 )
@@ -211,6 +213,43 @@ class JobsTest(unittest.TestCase):
                 jobs = stale_running_jobs(paths)
 
             self.assertEqual([job.job_id for job in jobs], [running.job_id])
+
+    def test_stale_queued_jobs_reports_dead_launch_terminal(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = AppPaths.from_repo_root(Path(tmp))
+            paths.ensure_directories()
+            queued = create_job(paths, kind="setup", name="initial setup")
+            update_job(queued, terminal_mode="terminal", terminal_pid=999999)
+
+            with unittest.mock.patch("mujina_assist.services.jobs._pid_alive", return_value=False):
+                jobs = stale_queued_jobs(paths)
+
+            self.assertEqual([job.job_id for job in jobs], [queued.job_id])
+            self.assertEqual(summarize_job(jobs[0]), "initial setup: stale")
+
+    def test_stale_jobs_includes_running_and_queued_records(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = AppPaths.from_repo_root(Path(tmp))
+            paths.ensure_directories()
+            queued = create_job(paths, kind="setup", name="initial setup")
+            update_job(queued, terminal_mode="terminal", terminal_pid=111111)
+            running = create_job(paths, kind="real_main", name="real main")
+            update_job(running, status="running", terminal_mode="terminal", terminal_pid=222222)
+
+            with unittest.mock.patch("mujina_assist.services.jobs._pid_alive", return_value=False):
+                jobs = stale_jobs(paths)
+
+            self.assertEqual({job.job_id for job in jobs}, {queued.job_id, running.job_id})
+
+    def test_old_queued_job_without_launch_metadata_is_not_stale(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = AppPaths.from_repo_root(Path(tmp))
+            paths.ensure_directories()
+            queued = create_job(paths, kind="setup", name="not launched yet")
+            queued.created_at = "2000-01-01T00:00:00+09:00"
+            save_job(queued)
+
+            self.assertEqual(stale_queued_jobs(paths), [])
 
 
 if __name__ == "__main__":

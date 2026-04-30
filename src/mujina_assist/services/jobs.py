@@ -224,13 +224,27 @@ def stale_running_jobs(paths: AppPaths) -> list[JobRecord]:
     return [job for job in active_jobs(paths) if job_is_stale(job)]
 
 
-def job_is_stale(job: JobRecord) -> bool:
-    if job.status != "running":
+def stale_queued_jobs(paths: AppPaths, *, queued_ttl_seconds: int = 30) -> list[JobRecord]:
+    return [job for job in list_jobs(paths) if job_is_stale(job, queued_ttl_seconds=queued_ttl_seconds)]
+
+
+def stale_jobs(paths: AppPaths, *, queued_ttl_seconds: int = 30) -> list[JobRecord]:
+    return [
+        job
+        for job in list_jobs(paths)
+        if job.status in {"queued", "running"} and job_is_stale(job, queued_ttl_seconds=queued_ttl_seconds)
+    ]
+
+
+def job_is_stale(job: JobRecord, *, queued_ttl_seconds: int = 30) -> bool:
+    if job.status not in {"queued", "running"}:
         return False
     if job.terminal_mode == "terminal" and job.terminal_pid is not None:
         return not _pid_alive(job.terminal_pid)
     if job.terminal_mode == "tmux" and job.terminal_label:
         return not _tmux_session_exists(job.terminal_label)
+    if job.status == "queued" and job.terminal_mode:
+        return _job_age_seconds(job) > queued_ttl_seconds
     return False
 
 
@@ -353,6 +367,16 @@ def _is_claim_stale(claim: dict, ttl_seconds: int) -> bool:
     return elapsed.total_seconds() > ttl_seconds
 
 
+def _job_age_seconds(job: JobRecord) -> float:
+    created_at = _parse_job_timestamp(job.created_at)
+    if created_at == datetime.min:
+        return float("inf")
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=datetime.now().astimezone().tzinfo)
+    elapsed = datetime.now().astimezone() - created_at
+    return elapsed.total_seconds()
+
+
 def _release_job_claim(claim_path: Path, expected_token: str) -> bool:
     if not claim_path.exists():
         return False
@@ -403,6 +427,8 @@ def _finish_job(job: JobRecord, *, status: str, returncode: int, message: str) -
 
 
 def summarize_job(job: JobRecord) -> str:
+    if job_is_stale(job):
+        return f"{job.name}: stale"
     if job.status == "queued":
         return f"{job.name}: 起動待ち"
     if job.status == "running":
