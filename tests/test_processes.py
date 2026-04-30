@@ -6,6 +6,7 @@ from pathlib import Path
 
 from mujina_assist.models import AppPaths
 from mujina_assist.services.processes import (
+    build_can_setup_script,
     build_real_imu_script,
     build_real_main_script,
     build_motor_probe_script,
@@ -52,6 +53,16 @@ class ProcessScriptTest(unittest.TestCase):
             paths = AppPaths.from_repo_root(Path(tmp))
             with self.assertRaises(ValueError):
                 build_real_main_script(paths, "invalid")
+
+    def test_real_launch_can_setup_is_separate_from_real_main(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = AppPaths.from_repo_root(Path(tmp))
+            setup_script = build_can_setup_script(paths, "serial")
+            main_script = build_real_main_script(paths, "serial")
+
+            self.assertIn("can_setup_serial.sh", setup_script)
+            self.assertIn("mujina_main", main_script)
+            self.assertNotIn("can_setup_serial.sh", main_script)
 
     def test_build_real_imu_script_quotes_port_name(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -5,8 +5,9 @@ from pathlib import Path
 from mujina_assist.models import AppPaths, RuntimeState
 from mujina_assist.services.checks import build_doctor_report
 from mujina_assist.services.checks import current_policy_label, write_config_file
-from mujina_assist.services.jobs import active_jobs, recent_jobs
+from mujina_assist.services.jobs import active_jobs, create_job, mark_job_finished, recent_jobs, update_job
 from mujina_assist.services.state import load_runtime_state
+from mujina_assist.services.terminals import launch_job
 from mujina_assist.tui.screens import SCREEN_CLASSES, TEXTUAL_IMPORT_ERROR
 from mujina_assist.tui.screens import _safety_state, _status_from_reasons
 
@@ -147,6 +148,20 @@ if TEXTUAL_IMPORT_ERROR is None:
 
         def action_request_quit(self) -> None:
             self.exit()
+
+        def launch_tui_job(self, *, kind: str, name: str, payload: dict | None = None) -> None:
+            job = create_job(self.paths, kind=kind, name=name, payload=payload or {})
+            launch = launch_job(self.paths, job)
+            if not launch.ok:
+                mark_job_finished(job, returncode=1, message=launch.message)
+                self.notify(f"起動できません: {launch.message}", severity="error", timeout=8)
+                return
+            update_job(job, terminal_mode=launch.mode, terminal_label=launch.label, terminal_pid=launch.pid)
+            self.notify(f"{name} を起動しました。ログ: {Path(job.log_path).name}", severity="information", timeout=8)
+            self.refresh_runtime_state()
+
+        def show_cli_required(self, command: str, reason: str) -> None:
+            self.notify(f"{reason}: {command}", severity="warning", timeout=10)
 
 
     MujinaAssistTuiApp = MujinaAssistTui

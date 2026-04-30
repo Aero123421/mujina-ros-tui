@@ -97,6 +97,50 @@ buttons: [0, 1, 0]
 
             self.assertTrue(wait_for_topic_health("/joy", timeout_s=0.1))
 
+    def test_wait_for_topic_health_requires_echo_for_generic_topics(self) -> None:
+        with patch("mujina_assist.services.live_health._ros_topic_list", return_value={"/robot_mode"}), patch(
+            "mujina_assist.services.live_health._topic_echo_once",
+            return_value="",
+        ), patch("mujina_assist.services.live_health._topic_hz", return_value=10.0), patch(
+            "mujina_assist.services.live_health.time.sleep",
+            return_value=None,
+        ):
+            self.assertFalse(wait_for_topic_health("/robot_mode", timeout_s=0.01))
+
+        with patch("mujina_assist.services.live_health._ros_topic_list", return_value={"/robot_mode"}), patch(
+            "mujina_assist.services.live_health._topic_echo_once",
+            return_value="data: 1\n",
+        ), patch("mujina_assist.services.live_health._topic_hz", return_value=10.0):
+            self.assertTrue(wait_for_topic_health("/robot_mode", timeout_s=0.1))
+
+    def test_imu_parser_does_not_confuse_nested_orientation_keys(self) -> None:
+        echo = """header:
+  stamp:
+    sec: 1893456000
+    nanosec: 0
+orientation_covariance:
+  x: 9.0
+orientation:
+  x: 0.0
+  y: 0.0
+  z: 0.0
+  w: 1.0
+angular_velocity:
+  x: 0.1
+  y: 0.2
+  z: 0.3
+"""
+        with patch("mujina_assist.services.live_health._ros_topic_list", return_value={"/imu/data"}), patch(
+            "mujina_assist.services.live_health._topic_hz",
+            return_value=198.4,
+        ), patch("mujina_assist.services.live_health._topic_echo_once", return_value=echo), patch(
+            "mujina_assist.services.live_health.time.time",
+            return_value=1893456000.01,
+        ):
+            sample = inspect_imu_topic()
+
+        self.assertAlmostEqual(sample.quaternion_norm or 0.0, 1.0)
+
 
 if __name__ == "__main__":
     unittest.main()

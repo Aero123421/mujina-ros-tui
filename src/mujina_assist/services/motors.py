@@ -147,6 +147,37 @@ def validate_scan_for_real_launch(
     return errors
 
 
+def validate_scan_for_zero(
+    result: MotorScanResult,
+    target_motor_ids: list[int] | None = None,
+    *,
+    max_abs_velocity_rad_s: float = 0.02,
+    max_temperature_c: float = 70.0,
+) -> list[str]:
+    errors: list[str] = []
+    targets = list(target_motor_ids or result.motor_ids)
+    entries_by_id = {entry.motor_id: entry for entry in result.entries}
+    for motor_id in targets:
+        entry = entries_by_id.get(motor_id)
+        if entry is None:
+            errors.append(f"motor {motor_id} の scan 結果がありません。")
+            continue
+        if not entry.responded:
+            errors.append(f"motor {motor_id} が zero 前 scan に応答していません。")
+            continue
+        if entry.error_code not in {"", "0", "0x00"}:
+            errors.append(f"motor {motor_id} error_code={entry.error_code} を返しています。")
+        if entry.velocity_rad_s is None:
+            errors.append(f"motor {motor_id} velocity が読めません。")
+        elif abs(entry.velocity_rad_s) > max_abs_velocity_rad_s:
+            errors.append(f"motor {motor_id} velocity={entry.velocity_rad_s:.3f} rad/s が大きすぎます。")
+        if entry.temperature_c is None:
+            errors.append(f"motor {motor_id} temperature が読めません。")
+        elif entry.temperature_c > max_temperature_c:
+            errors.append(f"motor {motor_id} temperature={entry.temperature_c:.1f}C が高すぎます。")
+    return errors
+
+
 def save_scan_result(path: Path, result: MotorScanResult) -> None:
     _atomic_write_json(path, result.to_dict())
 

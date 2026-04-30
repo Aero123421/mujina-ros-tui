@@ -61,6 +61,25 @@ python -m mujina_assist.main tui
 
 ROS や実機デバイスがない環境では、TUI 上の各チェックは `WARN` / `LOCK` として表示されます。
 
+## offline install / wheelhouse
+
+ネットワークが使えない実機へ持ち込む場合は、事前に同じ Python 系列の環境で wheelhouse を作ってから転送します。
+
+```bash
+python -m pip wheel -w wheelhouse .
+python -m pip wheel -w wheelhouse '.[test]'
+```
+
+実機側では repository と `wheelhouse/` を同じ場所に置き、外部 index を使わずにインストールします。
+
+```bash
+python -m venv .venv
+. .venv/bin/activate
+python -m pip install --no-index --find-links wheelhouse .
+```
+
+ROS / apt / rosdep / PyTorch CPU wheel など、OS 側依存はこの wheelhouse だけでは入りません。完全オフライン運用では apt mirror や事前導入済み base image も別途用意してください。
+
 ## キー操作
 
 TUI では下部 footer の keybind から各画面へ移動します。
@@ -78,6 +97,15 @@ TUI では下部 footer の keybind から各画面へ移動します。
 | `l` | Logs |
 | `?` | Help |
 | `q` | Quit |
+
+各画面の追加キー:
+
+- Setup: `u` で初回セットアップ job、`b` で build job を起動します。TUIの `u` は実機 udev/dialout 設定を含めません。
+- CAN: `n` で network CAN setup、`u` で serial CAN setup、`F5` で状態再取得を行います。
+- Motor: `n` / `u` で全12軸 read-only query job を network / serial CAN で起動します。値は Logs の job log で確認します。
+- Zero: `n` / `u` で zero 前の read-only query を起動できます。原点書き込みは `./start.sh zero` の確認付き CLI に委譲します。
+- Policy: `t` で ONNX 読み込みテスト job を起動します。policy 切替は manifest 確認があるため `./start.sh policy` を使います。
+- Real Preflight / Real Launch: TUI はロック理由を表示します。実機起動は operator checklist と `REAL` 入力を通すため `./start.sh robot` を使います。
 
 ## Repository 構成
 
@@ -149,6 +177,44 @@ mujina-ros-tui/
 | `diagnostic` | 同梱 upstream を clean copy として配置し、実機にトルクを送る操作を避ける診断用 workspace として記録する |
 
 workspace signature は upstream commit、mode、patch set hash、workspace tree hash、dirty 状態から作ります。signature が変わると、以前の SIM verified は無効として扱います。
+
+### diagnostic mode での許可/禁止
+
+`diagnostic` は「状態確認用」です。TUI / CLI では次の境界で扱います。
+
+許可する操作:
+
+- Doctor / Dashboard / Device / CAN の状態表示
+- `preflight` の不足条件表示
+- Logs の確認
+- workspace の clean copy 作成と signature 確認
+- CAN setup 手順の確認、または明示的に選んだ CAN setup job の起動
+- read-only / zero-gain の motor query による疎通確認
+
+禁止または確認付き CLI に委譲する操作:
+
+- `zero` による原点書き込み
+- `robot` による実機 mujina_main / joy / IMU の段階起動
+- standup / walk へ進む操作
+- external policy の manifest や SIM verified が未確認のまま実機へ進む操作
+
+TUI 上で `WAIT` / `LOCK` が見えても、それだけで安全が保証されたとは扱いません。実機に進む前は必ず Real Preflight の P0/P1/P2 と CLI 側の確認入力を通してください。
+
+## 配布zip
+
+配布用 zip は作業ディレクトリをOSのzip機能で固めるのではなく、tracked file だけを含める `git archive` を推奨します。
+
+```bash
+git archive --format=zip --output mujina-ros-tui.zip HEAD
+```
+
+特定タグから作る場合:
+
+```bash
+git archive --format=zip --prefix=mujina-ros-tui/ --output mujina-ros-tui-v0.1.0.zip v0.1.0
+```
+
+`.state/`、`cache/`、`logs/`、`workspace/`、`.venv/` などの生成物を混ぜないためです。
 
 ## 実機起動のロック
 

@@ -1,41 +1,171 @@
 diff --git a/mujina_control/mujina_control/motor_lib/motor_lib.py b/mujina_control/mujina_control/motor_lib/motor_lib.py
-index d65cd25..4f47f77 100644
+index d65cd25..e4cf558 100644
 --- a/mujina_control/mujina_control/motor_lib/motor_lib.py
 +++ b/mujina_control/mujina_control/motor_lib/motor_lib.py
-@@ -429,8 +429,7 @@ class CanMotorController:
- 
+@@ -253,6 +253,29 @@ CAN_ERR_MASK=0x1FFFFFFF
+ Index_List = [0X7005, 0X7006, 0X700A, 0X700B, 0X7010, 0X7011, 0X7014, 0X7016, 0X7017, 0X7018, 0x7019, 0x701A, 0x701B, 0x701C, 0x701D]
+
+ ##################
++
++class CanResponseError(RuntimeError):
++    """Base class for validated motor response failures."""
++
++
++class CanMotorTimeoutError(TimeoutError):
++    def __init__(self, message, unexpected_frames=None):
++        super().__init__(message)
++        self.unexpected_frames = unexpected_frames or []
++
++
++class UnexpectedCanIdError(CanResponseError):
++    pass
++
++
++class CanDlcError(CanResponseError):
++    pass
++
++
++class MotorError(CanResponseError):
++    pass
++
++
+
+ class CanMotorController:
+     """
+@@ -429,8 +453,80 @@ class CanMotorController:
+
              return can_id, can_dlc, data[:can_dlc]
          except Exception as e:
 -            print('Unable to Receive CAN Frame.')
 -            print('Error: ', e)
-+            raise TimeoutError('Unable to receive CAN frame') from e
- 
++            if isinstance(e, socket.timeout):
++                raise CanMotorTimeoutError('Timed out receiving CAN frame') from e
++            raise CanResponseError('Unable to receive CAN frame') from e
++
++    def _format_can_frame(self, can_id, can_dlc, data):
++        return 'id=0x{:x}, dlc={}, data={}'.format(can_id, can_dlc, data.hex())
++
++    def _response_matches_motor_id(self, can_id, data):
++        if self.motor_type == "RobStride02":
++            return (
++                ((can_id >> 8) & 0xff) == self.motor_id
++                or (can_id & 0xff) == self.motor_id
++            )
++        return can_id == self.motor_id or (len(data) > 0 and data[0] == self.motor_id)
++
++    def _expected_response_dlc(self):
++        if self.motor_type == "RobStride02":
++            return 8
++        return 6
++
++    def _check_motor_error(self, can_id):
++        if self.motor_type != "RobStride02":
++            return
++        communication_type = (can_id & 0x3f000000) >> 24
++        error_code = (can_id & 0x3f0000) >> 16
++        if communication_type == 2 and error_code != 0:
++            raise MotorError(
++                'Motor 0x{:x} reported error_code=0x{:x}'.format(
++                    self.motor_id, error_code
++                )
++            )
++
++    def _validate_motor_response(self, can_id, can_dlc, data, min_dlc):
++        if not self._response_matches_motor_id(can_id, data):
++            raise UnexpectedCanIdError(
++                'Expected response from motor 0x{:x}, got {}'.format(
++                    self.motor_id, self._format_can_frame(can_id, can_dlc, data)
++                )
++            )
++        if can_dlc < min_dlc:
++            raise CanDlcError(
++                'Expected response dlc >= {}, got {}'.format(
++                    min_dlc, self._format_can_frame(can_id, can_dlc, data)
++                )
++            )
++        self._check_motor_error(can_id)
++
++    def _recv_expected_motor_frame(self, min_dlc=None):
++        if min_dlc is None:
++            min_dlc = self._expected_response_dlc()
++        unexpected_frames = []
++        while True:
++            try:
++                can_id, can_dlc, data = self._recv_can_frame()
++            except CanMotorTimeoutError as e:
++                message = 'Timed out waiting for response from motor 0x{:x}'.format(
++                    self.motor_id
++                )
++                if unexpected_frames:
++                    message += '; unexpected frames: {}'.format(
++                        ', '.join(unexpected_frames)
++                    )
++                raise CanMotorTimeoutError(
++                    message, unexpected_frames=unexpected_frames
++                ) from e
++
++            if not self._response_matches_motor_id(can_id, data):
++                unexpected_frames.append(
++                    self._format_can_frame(can_id, can_dlc, data)
++                )
++                continue
++
++            self._validate_motor_response(can_id, can_dlc, data, min_dlc)
++            return can_id, can_dlc, data
+
      def enable_motor(self):
          """Enable the motor."""
-@@ -783,6 +782,8 @@ class CanMotorController:
+@@ -452,7 +542,7 @@ class CanMotorController:
+                 self._send_can_frame(b'\xff\xff\xff\xff\xff\xff\xff\xfc')
+             # 16進数で8バイトのデータを表す.
+             waitOhneSleep(enable_sleep)
+-            can_id, can_dlc, motorStatusData = self._recv_can_frame()
++            can_id, can_dlc, motorStatusData = self._recv_expected_motor_frame()
+             if self.motor_type == 'RobStride02':
+                 print('Motor Enabled.')
+                 return self.decode_robstride_motor_status(can_id,motorStatusData)
+@@ -489,7 +579,7 @@ class CanMotorController:
+                 _, _, _, _ = self.send_rad_command(0, 0, 0, 0, 0)
+                 self._send_can_frame(b'\xff\xff\xff\xff\xff\xff\xff\xfd')
+             waitOhneSleep(dt_sleep)
+-            can_id, can_dlc, motorStatusData = self._recv_can_frame()
++            can_id, can_dlc, motorStatusData = self._recv_expected_motor_frame()
+             if self.motor_type == 'RobStride02':
+                 print('Motor Disabled.')
+                 return self.decode_robstride_motor_status(can_id,motorStatusData)
+@@ -526,8 +616,8 @@ class CanMotorController:
+
+             else:
+                 self._send_can_frame(b'\xff\xff\xff\xff\xff\xff\xff\xfe')
+             waitOhneSleep(set_zero_sleep)
+-            can_id, can_dlc, motorStatusData = self._recv_can_frame()
++            can_id, can_dlc, motorStatusData = self._recv_expected_motor_frame()
+             if self.motor_type == 'RobStride02':
+                 print('Zero Position set.')
+                 return self.decode_robstride_motor_status(can_id,motorStatusData)
+@@ -783,6 +873,6 @@ class CanMotorController:
              self._send_can_frame(self._cmd_bytes.tobytes())
              waitOhneSleep(dt_sleep)
-             can_id, can_dlc, data = self._recv_can_frame()
-+            if can_dlc <= 0:
-+                raise RuntimeError('Empty CAN response')
+-            can_id, can_dlc, data = self._recv_can_frame()
++            can_id, can_dlc, data = self._recv_expected_motor_frame()
              return data
          except Exception as e:
              print('Error Sending Raw Commands!')
-@@ -800,6 +801,8 @@ class CanMotorController:
+@@ -798,7 +888,7 @@ class CanMotorController:
+             opt=float_to_uint16(torq, self.motorParams['T_MIN'], self.motorParams['T_MAX'])
              self._send_can_frame(send_data_, cmd, opt)
              waitOhneSleep(dt_sleep)
-             can_id, can_dlc, data = self._recv_can_frame()
-+            if can_dlc <= 0:
-+                raise RuntimeError('Empty RobStride response')
+-            can_id, can_dlc, data = self._recv_can_frame()
++            can_id, can_dlc, data = self._recv_expected_motor_frame(min_dlc=8)
              return can_id, data
          except Exception as e:
              print('Error Sending robostride move Commands!')
-@@ -821,6 +824,8 @@ class CanMotorController:
+@@ -817,7 +907,7 @@ class CanMotorController:
+
              self._send_can_frame(send_data_, cmd)
              waitOhneSleep(dt_sleep)
-             can_id, can_dlc, data = self._recv_can_frame()
-+            if can_dlc <= 0:
-+                raise RuntimeError('Empty RobStride response')
+-            can_id, can_dlc, data = self._recv_can_frame()
++            can_id, can_dlc, data = self._recv_expected_motor_frame(min_dlc=1)
              return can_id, data
          except Exception as e:
              print('Error Setting robstride motor param!')

@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 from rich.table import Table
 
+from mujina_assist.models import DEFAULT_MOTOR_IDS
 from mujina_assist.services.checks import (
     build_doctor_report,
     detect_real_devices,
@@ -306,12 +307,17 @@ if TEXTUAL_IMPORT_ERROR is None:
 
 
     class SetupFlowScreen(MujinaBaseScreen):
+        BINDINGS = MujinaBaseScreen.BINDINGS + [
+            ("u", "start_setup", "Setup開始"),
+            ("b", "start_build", "Build開始"),
+        ]
+
         def compose(self) -> ComposeResult:
             yield Header(show_clock=True)
             yield Container(
                 self.header("Setup Flow", "初回セットアップからSIM準備までの流れ"),
                 DataTable(id="setup-table"),
-                Static("[dim]実行ボタンは後続実装で既存job systemに接続します。旧CLIの setup/build subcommand はそのまま利用できます。[/dim]"),
+                Static(id="setup-actions"),
                 classes="screen-body",
             )
             yield Footer()
@@ -331,6 +337,22 @@ if TEXTUAL_IMPORT_ERROR is None:
                 ("SIM準備", "ok" if report.sim_ready else "warn", "確認済み" if report.sim_ready else "未確認"),
             ]
             _add_rows(table, rows)
+            self.query_one("#setup-actions", Static).update(
+                "\n".join(
+                    [
+                        "[b]Actions[/b]",
+                        "u: 初回セットアップ job を起動します（実機 udev/dialout は含めません）。",
+                        "b: workspace build job を起動します。",
+                        "実機用 udev/dialout を設定する場合は確認付き CLI: `./start.sh setup` を使ってください。",
+                    ]
+                )
+            )
+
+        def action_start_setup(self) -> None:
+            self.app.launch_tui_job(kind="setup", name="初回セットアップ", payload={"skip_upgrade": False, "setup_real_devices": False})
+
+        def action_start_build(self) -> None:
+            self.app.launch_tui_job(kind="build", name="workspace ビルド")
 
 
     class DeviceScreen(MujinaBaseScreen):
@@ -357,9 +379,21 @@ if TEXTUAL_IMPORT_ERROR is None:
 
 
     class CANScreen(MujinaBaseScreen):
+        BINDINGS = MujinaBaseScreen.BINDINGS + [
+            ("n", "start_can_net", "CAN net"),
+            ("u", "start_can_serial", "CAN serial"),
+            ("f5", "refresh", "更新"),
+        ]
+
         def compose(self) -> ComposeResult:
             yield Header(show_clock=True)
-            yield Container(self.header("CAN", "can0 / slcand / statistics"), DataTable(id="can-table"), Static(id="can-raw"), classes="screen-body")
+            yield Container(
+                self.header("CAN", "can0 / slcand / statistics"),
+                DataTable(id="can-table"),
+                Static(id="can-raw"),
+                Static(id="can-actions"),
+                classes="screen-body",
+            )
             yield Footer()
 
         def on_mount(self) -> None:
@@ -375,9 +409,35 @@ if TEXTUAL_IMPORT_ERROR is None:
                 table.add_row(key, str(status.get(key, "")))
             raw = str(status.get("raw") or "")
             self.query_one("#can-raw", Static).update("[b]Raw[/b]\n" + (raw[:2000] if raw else "ip details unavailable"))
+            self.query_one("#can-actions", Static).update(
+                "\n".join(
+                    [
+                        "[b]Actions[/b]",
+                        "n: network CAN setup job (`can_setup_net.sh`) を起動します。",
+                        "u: serial CAN setup job (`can_setup_serial.sh`) を起動します。",
+                        "F5: CAN状態を再取得します。",
+                        "diagnostic mode では CAN状態表示と setup 手順確認までに留め、実機起動へは進めません。",
+                    ]
+                )
+            )
+
+        def action_refresh(self) -> None:
+            self._refresh()
+
+        def action_start_can_net(self) -> None:
+            self.app.launch_tui_job(kind="can_setup", name="CAN setup (network)", payload={"can_mode": "net"})
+
+        def action_start_can_serial(self) -> None:
+            self.app.launch_tui_job(kind="can_setup", name="CAN setup (serial)", payload={"can_mode": "serial"})
 
 
     class MotorScreen(MujinaBaseScreen):
+        BINDINGS = MujinaBaseScreen.BINDINGS + [
+            ("n", "read_net", "Read net"),
+            ("u", "read_serial", "Read serial"),
+            ("g", "diagnostics", "診断CLI"),
+        ]
+
         JOINTS = [
             ("RL_collar_joint", 10),
             ("RL_hip_joint", 11),
@@ -395,7 +455,12 @@ if TEXTUAL_IMPORT_ERROR is None:
 
         def compose(self) -> ComposeResult:
             yield Header(show_clock=True)
-            yield Container(self.header("Motor", "12軸 zero-gain one-shot query の表示骨格"), DataTable(id="motor-table"), classes="screen-body")
+            yield Container(
+                self.header("Motor", "12軸 zero-gain one-shot query / read-only job"),
+                DataTable(id="motor-table"),
+                Static(id="motor-actions"),
+                classes="screen-body",
+            )
             yield Footer()
 
         def on_mount(self) -> None:
@@ -403,6 +468,33 @@ if TEXTUAL_IMPORT_ERROR is None:
             table.add_columns("Joint", "ID", "Resp", "Pos(rad)", "Vel(rad/s)", "Temp(C)", "Err", "Zero")
             for joint, motor_id in self.JOINTS:
                 table.add_row(joint, str(motor_id), "WAIT", "-", "-", "-", "-", "unknown")
+            self.query_one("#motor-actions", Static).update(
+                "\n".join(
+                    [
+                        "[b]Actions[/b]",
+                        "n: network CAN で全12軸 read-only motor query job を起動します。",
+                        "u: serial CAN で全12軸 read-only motor query job を起動します。",
+                        "g: 確認付き CLI `./start.sh motor-diagnostics` の利用を案内します。",
+                        "表示は最後のscan値ではなく操作入口です。応答値は Logs の job log で確認します。",
+                    ]
+                )
+            )
+
+        def _start_read(self, can_mode: str) -> None:
+            self.app.launch_tui_job(
+                kind="motor_read",
+                name=f"モータ確認 ({can_mode})",
+                payload={"ids": list(DEFAULT_MOTOR_IDS), "can_mode": can_mode},
+            )
+
+        def action_read_net(self) -> None:
+            self._start_read("net")
+
+        def action_read_serial(self) -> None:
+            self._start_read("serial")
+
+        def action_diagnostics(self) -> None:
+            self.app.show_cli_required("./start.sh motor-diagnostics", "自動診断はCAN選択と失敗時の案内をCLIで確認してください")
 
 
     class SkeletonScreen(MujinaBaseScreen):
@@ -420,12 +512,17 @@ if TEXTUAL_IMPORT_ERROR is None:
             table.add_columns("Item", "Status", "Summary")
             _add_rows(table, self.ITEMS)
             self.query_one("#skeleton-note", Static).update(
-                "[yellow]未接続の骨格画面です。ここに表示される WAIT/LOCK は実機安全判定ではありません。[/yellow]\n"
+                "[yellow]未接続または確認付きCLIに委譲する操作があります。ここに表示される WAIT/LOCK だけを安全判定として扱わないでください。[/yellow]\n"
                 "[dim]実際のロック状態は Dashboard / Real Preflight の evaluate_real_preflight 表示を確認してください。[/dim]"
             )
 
 
     class ZeroWizardScreen(SkeletonScreen):
+        BINDINGS = MujinaBaseScreen.BINDINGS + [
+            ("x", "zero_cli", "Zero CLI"),
+            ("n", "probe_net", "Probe net"),
+            ("u", "probe_serial", "Probe serial"),
+        ]
         SCREEN_TITLE = "Zero Wizard"
         SCREEN_SUMMARY = "pre-scan / confirmation / upstream zero / post verification"
         ITEMS = [
@@ -437,8 +534,29 @@ if TEXTUAL_IMPORT_ERROR is None:
             ("zero profile保存", "wait", "post-zero verification後に保存"),
         ]
 
+        def action_zero_cli(self) -> None:
+            self.app.show_cli_required("./start.sh zero", "原点書き込みは所定姿勢チェックと `ZERO ...` 入力が必要です")
+
+        def action_probe_net(self) -> None:
+            self.app.launch_tui_job(
+                kind="motor_read",
+                name="Zero前 motor probe (network)",
+                payload={"ids": list(DEFAULT_MOTOR_IDS), "can_mode": "net"},
+            )
+
+        def action_probe_serial(self) -> None:
+            self.app.launch_tui_job(
+                kind="motor_read",
+                name="Zero前 motor probe (serial)",
+                payload={"ids": list(DEFAULT_MOTOR_IDS), "can_mode": "serial"},
+            )
+
 
     class PolicyScreen(SkeletonScreen):
+        BINDINGS = MujinaBaseScreen.BINDINGS + [
+            ("t", "policy_test", "ONNX test"),
+            ("w", "policy_switch", "Switch CLI"),
+        ]
         SCREEN_TITLE = "Policy"
         SCREEN_SUMMARY = "default / USB / cache / manifest / SIM verified"
         ITEMS = [
@@ -449,8 +567,18 @@ if TEXTUAL_IMPORT_ERROR is None:
             ("SIM verified reset", "lock", "切替後は再確認"),
         ]
 
+        def action_policy_test(self) -> None:
+            self.app.launch_tui_job(kind="policy_test", name="ONNX 読み込みテスト")
+
+        def action_policy_switch(self) -> None:
+            self.app.show_cli_required("./start.sh policy", "policy切替は候補選択とmanifest確認が必要です")
+
 
     class SimulationScreen(SkeletonScreen):
+        BINDINGS = MujinaBaseScreen.BINDINGS + [
+            ("x", "sim_cli", "SIM CLI"),
+            ("v", "sim_verified_cli", "Verified CLI"),
+        ]
         SCREEN_TITLE = "Simulation"
         SCREEN_SUMMARY = "policy変更後の実機前確認"
         ITEMS = [
@@ -460,8 +588,17 @@ if TEXTUAL_IMPORT_ERROR is None:
             ("SIM verified", "lock", "live session確認後に付与"),
         ]
 
+        def action_sim_cli(self) -> None:
+            self.app.show_cli_required("./start.sh sim", "SIMはmain/joyのペア起動と別ターミナル確認が必要です")
+
+        def action_sim_verified_cli(self) -> None:
+            self.app.show_cli_required("./start.sh sim-verified", "SIM確認済み付与はlive session確認後にCLIで実行します")
+
 
     class RealPreflightScreen(SkeletonScreen):
+        BINDINGS = MujinaBaseScreen.BINDINGS + [
+            ("f", "preflight_cli", "Preflight CLI"),
+        ]
         SCREEN_TITLE = "Real Preflight"
         SCREEN_SUMMARY = "P0/P1/P2 lock reasons"
 
@@ -485,10 +622,18 @@ if TEXTUAL_IMPORT_ERROR is None:
             note += "  [b]Walk[/b] " + (_badge("lock") if safety.walk_locked else _badge("ok"))
             if safety.manual_recovery_required:
                 note += f"\n[red]manual recovery required:[/] {safety.manual_recovery_summary or '未解決'}"
+            note += "\n\nf: 確認付き CLI `./start.sh preflight` を起動して CAN mode を選びます。"
             self.query_one("#skeleton-note", Static).update(note)
+
+        def action_preflight_cli(self) -> None:
+            self.app.show_cli_required("./start.sh preflight", "preflightはCAN mode選択をCLIで確認してください")
 
 
     class RealLaunchScreen(SkeletonScreen):
+        BINDINGS = MujinaBaseScreen.BINDINGS + [
+            ("f", "open_preflight", "Preflight"),
+            ("x", "robot_cli", "Robot CLI"),
+        ]
         SCREEN_TITLE = "Real Launch"
         SCREEN_SUMMARY = "段階起動"
         ITEMS = [
@@ -499,6 +644,12 @@ if TEXTUAL_IMPORT_ERROR is None:
             ("joy node", "lock", "wait /joy"),
             ("standup unlock", "lock", "operator確認後"),
         ]
+
+        def action_open_preflight(self) -> None:
+            self.app.action_open_screen("real-preflight")
+
+        def action_robot_cli(self) -> None:
+            self.app.show_cli_required("./start.sh robot", "実機起動はP0/P1/P2、operator checklist、REAL入力をCLIで通します")
 
 
     class LogScreen(MujinaBaseScreen):

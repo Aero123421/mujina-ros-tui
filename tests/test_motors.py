@@ -15,6 +15,7 @@ from mujina_assist.services.motors import (
     parse_probe_output,
     save_scan_result,
     validate_scan_for_real_launch,
+    validate_scan_for_zero,
 )
 
 
@@ -72,6 +73,38 @@ motor 11: pos=0.002 vel=0.001 cur=0.200 temp=31.9
         result = build_scan_result(entries)
 
         self.assertTrue(validate_scan_for_real_launch(result))
+
+    def test_validate_scan_for_zero_checks_only_target_axes_with_tighter_velocity(self) -> None:
+        entries = [
+            MotorScanEntry(joint, motor_id, responded=True, position_rad=0.0, velocity_rad_s=0.0, temperature_c=31.0, error_code="0x00", status="ok")
+            for joint, motor_id in zip(JOINT_ORDER, DEFAULT_MOTOR_IDS)
+        ]
+        result = build_scan_result(entries)
+
+        self.assertEqual(validate_scan_for_zero(result, [DEFAULT_MOTOR_IDS[0]]), [])
+
+        entries[0].velocity_rad_s = 0.021
+        entries[1].error_code = "0x10"
+        result = build_scan_result(entries)
+
+        errors = validate_scan_for_zero(result, [DEFAULT_MOTOR_IDS[0]])
+
+        self.assertEqual(len(errors), 1)
+        self.assertIn("velocity", errors[0])
+
+    def test_validate_scan_for_zero_blocks_error_code_temperature_and_missing_response(self) -> None:
+        entries = [
+            MotorScanEntry("RL_collar_joint", 10, responded=True, velocity_rad_s=0.0, temperature_c=71.0, error_code="0x00", status="ok"),
+            MotorScanEntry("RL_hip_joint", 11, responded=True, velocity_rad_s=0.0, temperature_c=31.0, error_code="0x01", status="ok"),
+            MotorScanEntry("RL_knee_joint", 12, responded=False, status="timeout"),
+        ]
+        result = build_scan_result(entries)
+
+        errors = validate_scan_for_zero(result, [10, 11, 12])
+
+        self.assertTrue(any("temperature" in error for error in errors))
+        self.assertTrue(any("error_code" in error for error in errors))
+        self.assertTrue(any("応答していません" in error for error in errors))
 
     def test_parse_probe_output_accepts_upstream_probe_format(self) -> None:
         output = "Motor 10 Position: -0.003, Velocity: 0.0, Torque: 0.1, Temp: 32.1\n"

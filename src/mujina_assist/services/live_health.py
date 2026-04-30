@@ -15,6 +15,7 @@ from mujina_assist.services.devices import detect_real_devices
 @dataclass(slots=True)
 class TopicSample:
     exists: bool = False
+    message_received: bool = False
     hz: float | None = None
     last_age_s: float | None = None
     quaternion_norm: float | None = None
@@ -86,21 +87,26 @@ def wait_for_topic_health(topic: str, *, timeout_s: float = 10.0, min_hz: float 
                 return True
         else:
             sample = inspect_topic(topic)
-            if sample.exists and (sample.hz is None or sample.hz >= min_hz):
+            if sample.exists and sample.message_received and (sample.hz is None or sample.hz >= min_hz):
                 return True
         time.sleep(0.5)
     return False
 
 
-def inspect_topic(topic: str) -> TopicSample:
+def inspect_topic(topic: str, *, require_message: bool = True) -> TopicSample:
     topics = _ros_topic_list()
     if topic not in topics:
         return TopicSample(exists=False, summary=f"{topic} is not listed")
-    return TopicSample(exists=True, hz=_topic_hz(topic), summary=f"{topic} listed")
+    if not require_message:
+        return TopicSample(exists=True, hz=_topic_hz(topic), summary=f"{topic} listed")
+    echo = _topic_echo_once(topic)
+    if not echo:
+        return TopicSample(exists=True, hz=_topic_hz(topic), summary=f"{topic} listed but echo --once returned no message")
+    return TopicSample(exists=True, message_received=True, hz=_topic_hz(topic), summary=f"{topic} echo --once ok")
 
 
 def inspect_imu_topic(topic: str = "/imu/data") -> TopicSample:
-    sample = inspect_topic(topic)
+    sample = inspect_topic(topic, require_message=False)
     if not sample.exists:
         return sample
     echo = _topic_echo_once(topic)
@@ -108,13 +114,15 @@ def inspect_imu_topic(topic: str = "/imu/data") -> TopicSample:
     if not echo:
         sample.summary = f"{topic} listed but echo --once returned no message"
         return sample
-    quat = [_yaml_number(echo, key) for key in ("orientation.x", "orientation.y", "orientation.z", "orientation.w")]
-    gyro = [_yaml_number(echo, key) for key in ("angular_velocity.x", "angular_velocity.y", "angular_velocity.z")]
+    sample.message_received = True
+    parsed = _parse_yaml_message(echo)
+    quat = [_yaml_number(parsed, key) for key in ("orientation.x", "orientation.y", "orientation.z", "orientation.w")]
+    gyro = [_yaml_number(parsed, key) for key in ("angular_velocity.x", "angular_velocity.y", "angular_velocity.z")]
     if all(value is not None and math.isfinite(value) for value in quat):
         sample.quaternion_norm = math.sqrt(sum(float(value) * float(value) for value in quat if value is not None))
     sample.gyro_finite = all(value is not None and math.isfinite(value) for value in gyro)
-    sec = _yaml_number(echo, "header.stamp.sec")
-    nanosec = _yaml_number(echo, "header.stamp.nanosec")
+    sec = _yaml_number(parsed, "header.stamp.sec")
+    nanosec = _yaml_number(parsed, "header.stamp.nanosec")
     if sec is not None and sec > 0:
         sample.last_age_s = max(0.0, time.time() - (sec + (nanosec or 0) / 1_000_000_000))
     sample.summary = _imu_summary(True, sample)
@@ -122,17 +130,19 @@ def inspect_imu_topic(topic: str = "/imu/data") -> TopicSample:
 
 
 def inspect_joy_topic(topic: str = "/joy") -> TopicSample:
-    sample = inspect_topic(topic)
+    sample = inspect_topic(topic, require_message=False)
     if not sample.exists:
         return sample
     echo = _topic_echo_once(topic)
     if not echo:
         sample.summary = f"{topic} listed but echo --once returned no message"
         return sample
-    sample.axes_count = _yaml_sequence_count(echo, "axes")
-    sample.buttons_count = _yaml_sequence_count(echo, "buttons")
-    sec = _yaml_number(echo, "header.stamp.sec")
-    nanosec = _yaml_number(echo, "header.stamp.nanosec")
+    sample.message_received = True
+    parsed = _parse_yaml_message(echo)
+    sample.axes_count = _yaml_sequence_count(parsed, "axes")
+    sample.buttons_count = _yaml_sequence_count(parsed, "buttons")
+    sec = _yaml_number(parsed, "header.stamp.sec")
+    nanosec = _yaml_number(parsed, "header.stamp.nanosec")
     if sec is not None and sec > 0:
         sample.last_age_s = max(0.0, time.time() - (sec + (nanosec or 0) / 1_000_000_000))
     sample.summary = _joy_summary(True, sample)
@@ -186,52 +196,91 @@ def _topic_echo_once(topic: str) -> str:
     return result.stdout or ""
 
 
-def _yaml_number(text: str, dotted_path: str) -> float | None:
-    parts = dotted_path.split(".")
-    indent = -1
-    for part in parts:
-        pattern = re.compile(rf"^(?P<indent>\s*){re.escape(part)}:\s*(?P<value>[-+0-9.eE]+)?\s*$")
-        for line in text.splitlines():
-            match = pattern.match(line)
-            if not match:
-                continue
-            current_indent = len(match.group("indent"))
-            if current_indent <= indent:
-                continue
-            indent = current_indent
-            value = match.group("value")
-            if value is None:
-                break
-            try:
-                return float(value)
-            except ValueError:
-                return None
-            break
-        else:
-            return None
-    return None
+def _parse_yaml_message(text: str) -> object:
+    try:
+        import yaml  # type: ignore[import-not-found]
+    except Exception:
+        yaml = None
+    if yaml is not None:
+        try:
+            data = yaml.safe_load(text)
+            return data if data is not None else {}
+        except Exception:
+            pass
+    return _parse_simple_yaml(text)
 
 
-def _yaml_sequence_count(text: str, key: str) -> int:
-    inline = re.search(rf"^\s*{re.escape(key)}:\s*\[(?P<body>[^\]]*)\]\s*$", text, flags=re.MULTILINE)
-    if inline:
-        body = inline.group("body").strip()
-        return 0 if not body else len([item for item in body.split(",") if item.strip()])
+def _parse_simple_yaml(text: str) -> dict[str, object]:
+    root: dict[str, object] = {}
     lines = text.splitlines()
-    for index, line in enumerate(lines):
-        if not re.match(rf"^\s*{re.escape(key)}:\s*$", line):
+    stack: list[tuple[int, dict[str, object] | list[object]]] = [(-1, root)]
+    for index, raw_line in enumerate(lines):
+        if not raw_line.strip() or raw_line.lstrip().startswith("#"):
             continue
-        base_indent = len(line) - len(line.lstrip())
-        count = 0
-        for child in lines[index + 1 :]:
-            if not child.strip():
-                continue
-            indent = len(child) - len(child.lstrip())
-            if indent <= base_indent:
-                break
-            if child.lstrip().startswith("-"):
-                count += 1
-        return count
+        item_match = re.match(r"^(?P<indent>\s*)-\s*(?P<value>.*)$", raw_line)
+        if item_match is not None:
+            indent = len(item_match.group("indent"))
+            while stack and indent <= stack[-1][0]:
+                stack.pop()
+            parent = stack[-1][1] if stack else root
+            if isinstance(parent, list):
+                parent.append(_parse_simple_yaml_scalar(item_match.group("value").strip()))
+            continue
+        match = re.match(r"^(?P<indent>\s*)(?P<key>[^:\[\]-][^:]*):(?:\s*(?P<value>.*))?$", raw_line)
+        if match is None:
+            continue
+        indent = len(match.group("indent"))
+        key = match.group("key").strip()
+        value_text = (match.group("value") or "").strip()
+        while stack and indent <= stack[-1][0]:
+            stack.pop()
+        parent = stack[-1][1] if stack else root
+        if not isinstance(parent, dict):
+            continue
+        if value_text == "":
+            next_content = next((line for line in lines[index + 1 :] if line.strip()), "")
+            child: dict[str, object] | list[object] = [] if next_content.lstrip().startswith("-") else {}
+            parent[key] = child
+            stack.append((indent, child))
+        else:
+            parent[key] = _parse_simple_yaml_scalar(value_text)
+    return root
+
+
+def _parse_simple_yaml_scalar(value: str) -> object:
+    if value.startswith("[") and value.endswith("]"):
+        body = value[1:-1].strip()
+        if not body:
+            return []
+        return [_parse_simple_yaml_scalar(item.strip()) for item in body.split(",")]
+    try:
+        return float(value)
+    except ValueError:
+        return value
+
+
+def _yaml_number(data: object, dotted_path: str) -> float | None:
+    value = _yaml_get(data, dotted_path)
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _yaml_get(data: object, dotted_path: str) -> object | None:
+    current = data
+    for part in dotted_path.split("."):
+        if not isinstance(current, dict) or part not in current:
+            return None
+        current = current[part]
+    return current
+
+
+def _yaml_sequence_count(data: object, key: str) -> int:
+    value = _yaml_get(data, key)
+    if isinstance(value, list):
+        return len(value)
     return 0
 
 

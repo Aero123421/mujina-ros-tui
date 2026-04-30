@@ -19,6 +19,55 @@ VANILLA_MODE = "vanilla"
 ASSISTED_MODE = "assisted"
 DIAGNOSTIC_MODE = "diagnostic"
 WORKSPACE_IGNORED_NAMES = {".git", ".mujina-upstream.json"}
+REQUIRED_ASSISTED_PATCHES = {
+    "0002": (
+        (
+            Path("rt_usb_imu_driver/src/parser.cpp"),
+            ("values.size() == 7", "Ignore malformed frames; live health checks catch stale data."),
+            ("Parse line:", "Warning: Expected 8 values"),
+        ),
+        (
+            Path("rt_usb_imu_driver/src/rt_usb_imu_driver.cpp"),
+            (
+                'this->declare_parameter("baud_rate", 2000000);',
+                "baudRateToSpeed",
+                "case 38400:",
+                "case 921600:",
+                "case 2000000:",
+                "Unsupported IMU baud_rate",
+                "B2000000",
+                "int port_fd_ = -1;",
+            ),
+            ("int port_fd_;",),
+        ),
+    ),
+    "0003": (
+        (
+            Path("mujina_control/mujina_control/motor_lib/motor_lib.py"),
+            (
+                "class CanMotorTimeoutError",
+                "class UnexpectedCanIdError",
+                "class CanDlcError",
+                "class MotorError",
+                "_response_matches_motor_id",
+                "_recv_expected_motor_frame",
+                "unexpected frames",
+            ),
+            ("print('Unable to Receive CAN Frame.')",),
+        ),
+    ),
+    "0004": (
+        (
+            Path("mujina_control/mujina_control/mujina_main.py"),
+            (
+                "self.robot_state.velocity = [0.0] * len(P.STANDBY_ANGLE)",
+                "Ignoring joy message with insufficient axes/buttons",
+                "requested_mode = RobotModeCommand(msg.mode)",
+            ),
+            ("if msg.mode not in RobotModeCommand:",),
+        ),
+    ),
+}
 WorkspaceMode = Literal["vanilla", "assisted", "diagnostic"]
 
 
@@ -265,6 +314,8 @@ def prepare_workspace(
         shutil.copytree(paths.vendored_upstream_dir, tmp_dir, ignore=shutil.ignore_patterns(".git"))
         if mode == ASSISTED_MODE:
             applied_patches = apply_patch_queue(tmp_dir, paths.upstream_patches_dir)
+            if applied_patches:
+                verify_assisted_patchset(tmp_dir)
         upstream_commit = detect_upstream_commit(paths.vendored_upstream_dir)
         patches_hash = patch_set_hash(paths) if mode == ASSISTED_MODE else ""
         workspace_tree_hash = _tree_hash(tmp_dir, ignored_names=WORKSPACE_IGNORED_NAMES)
@@ -341,16 +392,59 @@ def apply_patch_queue(workspace_dir: Path, patch_dir: Path) -> list[Path]:
         raise FileNotFoundError(workspace_dir)
     for patch_file in patch_files:
         result = subprocess.run(
-            ["git", "apply", "--whitespace=nowarn", str(patch_file)],
+            ["git", "apply", "--recount", "--whitespace=nowarn", "--verbose", str(patch_file)],
             cwd=workspace_dir,
+            env=_git_apply_env(workspace_dir),
             text=True,
             capture_output=True,
             check=False,
         )
+        output = (result.stderr or result.stdout or "").strip()
         if result.returncode != 0:
-            output = (result.stderr or result.stdout or "").strip()
+            raise RuntimeError(f"failed to apply upstream patch {patch_file}: {output}")
+        if _git_apply_skipped_patch(result):
             raise RuntimeError(f"failed to apply upstream patch {patch_file}: {output}")
     return patch_files
+
+
+def verify_assisted_patchset(workspace_dir: Path) -> None:
+    missing: list[str] = []
+    for patch_id, checks in REQUIRED_ASSISTED_PATCHES.items():
+        if not _assisted_patch_present(workspace_dir, checks):
+            missing.append(patch_id)
+    if missing:
+        labels = ", ".join(missing)
+        raise RuntimeError(f"assisted patch verification failed; missing required patches: {labels}")
+
+
+def _assisted_patch_present(
+    workspace_dir: Path,
+    checks: tuple[tuple[Path, tuple[str, ...], tuple[str, ...]], ...],
+) -> bool:
+    for relative_path, required_fragments, forbidden_fragments in checks:
+        path = workspace_dir / relative_path
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            return False
+        if not all(fragment in text for fragment in required_fragments):
+            return False
+        if any(fragment in text for fragment in forbidden_fragments):
+            return False
+    return True
+
+
+def _git_apply_env(workspace_dir: Path) -> dict[str, str]:
+    env = os.environ.copy()
+    env.pop("GIT_DIR", None)
+    env.pop("GIT_WORK_TREE", None)
+    env["GIT_CEILING_DIRECTORIES"] = str(workspace_dir.resolve().parent)
+    return env
+
+
+def _git_apply_skipped_patch(result: subprocess.CompletedProcess[str]) -> bool:
+    output = "\n".join(part for part in (result.stdout, result.stderr) if part)
+    return "Skipped patch" in output or "Skipped" in output
 
 
 def sync_runtime_workspace_state(paths: AppPaths, state: RuntimeState) -> None:

@@ -232,7 +232,7 @@ class AppTest(unittest.TestCase):
 
             def run_bash_side_effect(*args, **kwargs):
                 log_path = kwargs["log_path"]
-                if log_path.suffix == ".log" and "post-zero-scan" in log_path.name:
+                if log_path.suffix == ".log":
                     self._write_successful_probe_log(log_path)
                 return SimpleNamespace(returncode=0)
 
@@ -251,11 +251,36 @@ class AppTest(unittest.TestCase):
             self.assertIn("Motor probe completed.", run_bash_mock.call_args_list[0].args[0])
             self.assertIn("can_setup_serial.sh", run_bash_mock.call_args_list[0].args[0])
             self.assertEqual(run_bash_mock.call_args_list[0].kwargs["log_path"], Path(job.log_path).with_suffix(".preflight.log"))
+            self.assertTrue(Path(job.log_path).with_suffix(".preflight.json").exists())
             self.assertIn("ids = [10, 11, 12, 7, 8, 9, 4, 5, 6, 1, 2, 3]", run_bash_mock.call_args_list[1].args[0])
             self.assertTrue(app.paths.active_zero_profile_file.exists())
             self.assertIn("motor_set_zero_position.py", execute_shell_job_mock.call_args.args[1])
             self.assertIn("--device can0", execute_shell_job_mock.call_args.args[1])
             self.assertNotIn("can_setup_serial.sh", execute_shell_job_mock.call_args.args[1])
+
+    def test_execute_zero_job_blocks_when_preflight_scan_is_not_safe_for_zero(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            app = MujinaAssistApp(Path(tmp))
+            self._prepare_built_workspace(app)
+            job = create_job(app.paths, kind="zero", name="zero (3)", payload={"ids": [3], "can_mode": "serial"})
+
+            def run_bash_side_effect(*args, **kwargs):
+                log_path = kwargs["log_path"]
+                log_path.write_text(
+                    '{"event": "motor_probe", "motor_id": 3, "position_rad": 0.01, '
+                    '"velocity_rad_s": 0.05, "current_a": 0.0, "temperature_c": 31.0, '
+                    '"error_code": "0x00", "status": "ok"}\n',
+                    encoding="utf-8",
+                )
+                return SimpleNamespace(returncode=0)
+
+            with patch("mujina_assist.app.run_bash", side_effect=run_bash_side_effect), patch.object(app, "_execute_shell_job") as execute_shell_job_mock:
+                result = app._execute_zero_job(job)
+
+            self.assertEqual(result[0], 1)
+            self.assertIn("前提確認", result[1])
+            execute_shell_job_mock.assert_not_called()
+            self.assertTrue(Path(job.log_path).with_suffix(".preflight.json").exists())
 
     def test_execute_zero_job_treats_preflight_interrupt_as_stopped(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

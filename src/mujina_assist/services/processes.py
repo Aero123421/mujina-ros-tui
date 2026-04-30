@@ -70,8 +70,13 @@ def build_real_imu_script(paths: AppPaths, port_name: str = "/dev/rt_usb_imu") -
     )
 
 
+def build_can_setup_script(paths: AppPaths, can_mode: str) -> str:
+    return _workspace_command(paths, _can_setup_command(can_mode))
+
+
 def build_real_main_script(paths: AppPaths, can_mode: str) -> str:
-    return _workspace_command(paths, _can_setup_command(can_mode), "ros2 run mujina_control mujina_main")
+    _can_setup_command(can_mode)
+    return _workspace_command(paths, "ros2 run mujina_control mujina_main")
 
 
 def build_motor_read_script(paths: AppPaths, ids: list[int], can_mode: str, *, device_name: str = "can0") -> str:

@@ -40,7 +40,13 @@ from mujina_assist.services.jobs import (
     update_job,
 )
 from mujina_assist.services.live_health import wait_for_topic_health
-from mujina_assist.services.motors import build_scan_result, parse_probe_output, save_scan_result, validate_scan_for_real_launch
+from mujina_assist.services.motors import (
+    build_scan_result,
+    parse_probe_output,
+    save_scan_result,
+    validate_scan_for_real_launch,
+    validate_scan_for_zero,
+)
 from mujina_assist.services.policy import (
     activate_policy,
     all_policy_candidates,
@@ -50,6 +56,7 @@ from mujina_assist.services.policy import (
 from mujina_assist.services.policy_manifest import validate_policy_manifest
 from mujina_assist.services.processes import (
     build_joy_script,
+    build_can_setup_script,
     build_motor_probe_script,
     build_motor_read_script,
     build_real_imu_script,
@@ -616,6 +623,19 @@ class MujinaAssistApp:
 
     def _launch_real_job_group(self, jobs: list[JobRecord]) -> int:
         section("段階起動")
+        can_mode = str(next((job.payload.get("can_mode") for job in jobs if job.kind == "real_main"), None) or "net")
+        log_path = self.paths.logs_dir / f"real-launch-can-setup-{datetime.now().strftime('%Y%m%d-%H%M%S')}.log"
+        setup_result = run_bash(
+            build_can_setup_script(self.paths, can_mode),
+            cwd=self.paths.workspace_dir,
+            log_path=log_path,
+            interactive=False,
+        )
+        if setup_result.returncode != 0:
+            error("実機段階起動の CAN setup に失敗しました。")
+            bullet(f"ログ: {log_path}")
+            return 1
+        success("CAN setup が完了しました。")
         return self._launch_supervised_job_group(
             jobs,
             stages=[
@@ -946,6 +966,22 @@ class MujinaAssistApp:
                         next_steps=["`ロボット診断` で `/dev/input/js0` を確認してください。"],
                         allow_sigint_stop=True,
                     )
+                elif job.kind == "can_setup":
+                    can_mode = str(job.payload.get("can_mode", "net"))
+                    returncode, message, stopped = self._execute_shell_job(
+                        job,
+                        build_can_setup_script(self.paths, can_mode),
+                        f"CAN setup ({can_mode}) を終了しました。",
+                        causes=[
+                            "CAN モードの選択が違います。",
+                            "USB-CAN / network CAN の接続、電源、権限が不足しています。",
+                        ],
+                        next_steps=[
+                            "`Device` / `CAN` 画面で can0 と /dev/usb_can の状態を確認してください。",
+                            "serial CAN の場合は slcand と udev ルールを確認してください。",
+                        ],
+                        allow_sigint_stop=True,
+                    )
                 elif job.kind == "policy_switch":
                     returncode, message, stopped = self._execute_policy_switch_job(job)
                 elif job.kind == "policy_test":
@@ -1132,6 +1168,31 @@ class MujinaAssistApp:
                 ],
             )
             return preflight_result.returncode, "原点位置設定の前提確認に失敗しました。", False
+        output = (
+            preflight_log_path.read_text(encoding="utf-8", errors="ignore")
+            if preflight_log_path.exists()
+            else getattr(preflight_result, "stdout", "")
+        )
+        scan_result = build_scan_result(
+            parse_probe_output(output),
+            can_interface="can0",
+            scan_kind="zero_gain_one_shot_query",
+        )
+        scan_path = preflight_log_path.with_suffix(".json")
+        save_scan_result(scan_path, scan_result)
+        scan_errors = validate_scan_for_zero(scan_result, ids)
+        if scan_errors:
+            self._report_failure(
+                "原点位置設定の前提確認に失敗しました。",
+                preflight_log_path,
+                causes=scan_errors[:8],
+                next_steps=[
+                    "対象 ID の応答、error_code、速度、温度を確認してください。",
+                    "zero 書き込みは実行していません。",
+                ],
+            )
+            bullet(f"scan: {scan_path}")
+            return 1, "原点位置設定の前提確認に失敗しました。", False
         zero_result = self._execute_shell_job(
             job,
             build_zero_script(self.paths, ids, can_mode, include_can_setup=False),
