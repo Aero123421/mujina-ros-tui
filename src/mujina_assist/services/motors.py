@@ -119,6 +119,34 @@ def summarize_scan_entries(entries: list[MotorScanEntry]) -> dict[str, Any]:
     }
 
 
+def validate_scan_for_real_launch(
+    result: MotorScanResult,
+    *,
+    max_temperature_c: float = 70.0,
+    max_abs_velocity_rad_s: float = 0.2,
+) -> list[str]:
+    errors: list[str] = []
+    if result.motor_ids != DEFAULT_MOTOR_IDS:
+        errors.append("motor_ids が Mujina の既定 12 軸と一致しません。")
+    if result.joint_order != JOINT_ORDER:
+        errors.append("joint_order が Mujina の既定順序と一致しません。")
+    if result.summary.get("responded") != len(DEFAULT_MOTOR_IDS):
+        errors.append(f"応答した motor が {result.summary.get('responded', 0)}/12 です。")
+    if result.summary.get("error_count", 0):
+        errors.append("error_code を返した motor があります。")
+    for entry in result.entries:
+        if not entry.responded:
+            errors.append(f"motor {entry.motor_id} が応答していません。")
+            continue
+        if entry.temperature_c is not None and entry.temperature_c > max_temperature_c:
+            errors.append(f"motor {entry.motor_id} temperature={entry.temperature_c:.1f}C が高すぎます。")
+        if entry.velocity_rad_s is None:
+            errors.append(f"motor {entry.motor_id} velocity が読めません。")
+        elif abs(entry.velocity_rad_s) > max_abs_velocity_rad_s:
+            errors.append(f"motor {entry.motor_id} velocity={entry.velocity_rad_s:.3f} rad/s が大きすぎます。")
+    return errors
+
+
 def save_scan_result(path: Path, result: MotorScanResult) -> None:
     _atomic_write_json(path, result.to_dict())
 

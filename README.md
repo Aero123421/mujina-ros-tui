@@ -16,6 +16,7 @@
 - policy manifest と SIM verification の状態を見えるようにする
 - zero profile と post-zero verification を保存、確認する
 - 実機起動前に不足している条件を `LOCK` として表示する
+- real launch 前に 12 軸 zero-gain query、`/imu/data`、`/robot_mode`、`/joy` の live health を段階確認する
 - 長い処理や常駐プロセスを job として管理し、ログを追う
 
 ## 想定環境
@@ -136,6 +137,8 @@ mujina-ros-tui/
 `third_party/mujina_ros` は clean copy として扱います。直接編集せず、必要な差分は `patches/mujina_ros/*.patch` か `src/mujina_assist` 側に置きます。
 
 サードパーティ表記は `THIRD_PARTY_NOTICES.md` にまとめています。
+
+現在の patch queue には CAN setup、IMU driver、motor response handling、`mujina_main` safety guard の補正を置いています。`third_party/mujina_ros` は直接編集せず、`workspace/src/mujina_ros` 作成時に適用します。
 
 ## workspace mode
 

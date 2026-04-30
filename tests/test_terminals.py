@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from mujina_assist.models import AppPaths
 from mujina_assist.services.jobs import create_job
+from mujina_assist.services import terminals
 from mujina_assist.services.terminals import _backend_command, launch_job, stop_job_launch, write_worker_script
 
 
@@ -84,13 +85,13 @@ class TerminalsTest(unittest.TestCase):
             self.assertIn("konsole: 権限エラー", result.message)
             self.assertGreaterEqual(len(result.failure_reasons), 2)
 
-    def test_stop_job_launch_for_terminal_reports_unconfirmed_stop(self) -> None:
-        with patch("mujina_assist.services.terminals.os.kill") as kill_mock:
+    def test_stop_job_launch_for_terminal_uses_process_group_when_available(self) -> None:
+        target = "mujina_assist.services.terminals.os.killpg" if hasattr(terminals.os, "killpg") else "mujina_assist.services.terminals.os.kill"
+        with patch(target) as kill_mock:
             message = stop_job_launch(mode="terminal", label="gnome-terminal", pid=4321)
 
         kill_mock.assert_called_once()
-        self.assertIn("SIGTERM", message or "")
-        self.assertIn("停止確認", message or "")
+        self.assertIsNone(message)
 
     def test_stop_job_launch_for_tmux_reports_oserror(self) -> None:
         with patch(

@@ -137,10 +137,13 @@ def stop_job_launch(*, mode: str, label: str, pid: int | None = None) -> str | N
         if pid is None:
             return "端末 PID がありません"
         try:
-            os.kill(pid, signal.SIGTERM)
+            if hasattr(os, "killpg"):
+                os.killpg(pid, signal.SIGTERM)
+            else:
+                os.kill(pid, signal.SIGTERM)
         except OSError as exc:
             return f"{exc.__class__.__name__}: {exc}"
-        return "端末プロセスへ SIGTERM は送信しましたが、停止確認はできていません"
+        return None
     return f"未知の terminal mode です: {mode}"
 
 
@@ -154,7 +157,7 @@ def _launch_in_graphical_terminal(
     if not command:
         return None, f"対応していないバックエンドです: {backend}"
     try:
-        return subprocess.Popen(command, cwd=str(cwd), text=True), ""
+        return subprocess.Popen(command, cwd=str(cwd), text=True, start_new_session=True), ""
     except OSError as exc:
         return None, f"{exc.__class__.__name__}: {exc}"
     except subprocess.SubprocessError as exc:

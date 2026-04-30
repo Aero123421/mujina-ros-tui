@@ -1,0 +1,41 @@
+diff --git a/mujina_control/mujina_control/motor_lib/motor_lib.py b/mujina_control/mujina_control/motor_lib/motor_lib.py
+index d65cd25..4f47f77 100644
+--- a/mujina_control/mujina_control/motor_lib/motor_lib.py
++++ b/mujina_control/mujina_control/motor_lib/motor_lib.py
+@@ -429,8 +429,7 @@ class CanMotorController:
+ 
+             return can_id, can_dlc, data[:can_dlc]
+         except Exception as e:
+-            print('Unable to Receive CAN Frame.')
+-            print('Error: ', e)
++            raise TimeoutError('Unable to receive CAN frame') from e
+ 
+     def enable_motor(self):
+         """Enable the motor."""
+@@ -783,6 +782,8 @@ class CanMotorController:
+             self._send_can_frame(self._cmd_bytes.tobytes())
+             waitOhneSleep(dt_sleep)
+             can_id, can_dlc, data = self._recv_can_frame()
++            if can_dlc <= 0:
++                raise RuntimeError('Empty CAN response')
+             return data
+         except Exception as e:
+             print('Error Sending Raw Commands!')
+@@ -800,6 +801,8 @@ class CanMotorController:
+             self._send_can_frame(send_data_, cmd, opt)
+             waitOhneSleep(dt_sleep)
+             can_id, can_dlc, data = self._recv_can_frame()
++            if can_dlc <= 0:
++                raise RuntimeError('Empty RobStride response')
+             return can_id, data
+         except Exception as e:
+             print('Error Sending robostride move Commands!')
+@@ -821,6 +824,8 @@ class CanMotorController:
+             self._send_can_frame(send_data_, cmd)
+             waitOhneSleep(dt_sleep)
+             can_id, can_dlc, data = self._recv_can_frame()
++            if can_dlc <= 0:
++                raise RuntimeError('Empty RobStride response')
+             return can_id, data
+         except Exception as e:
+             print('Error Setting robstride motor param!')

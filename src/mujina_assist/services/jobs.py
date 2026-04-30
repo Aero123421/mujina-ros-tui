@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import socket
+import subprocess
 from dataclasses import asdict
 from dataclasses import fields as dataclass_fields
 from datetime import datetime
@@ -219,6 +220,20 @@ def active_jobs(paths: AppPaths) -> list[JobRecord]:
     return [job for job in list_jobs(paths) if job.status == "running"]
 
 
+def stale_running_jobs(paths: AppPaths) -> list[JobRecord]:
+    return [job for job in active_jobs(paths) if job_is_stale(job)]
+
+
+def job_is_stale(job: JobRecord) -> bool:
+    if job.status != "running":
+        return False
+    if job.terminal_mode == "terminal" and job.terminal_pid is not None:
+        return not _pid_alive(job.terminal_pid)
+    if job.terminal_mode == "tmux" and job.terminal_label:
+        return not _tmux_session_exists(job.terminal_label)
+    return False
+
+
 def update_job(
     job: JobRecord,
     *,
@@ -399,3 +414,23 @@ def summarize_job(job: JobRecord) -> str:
     if job.status == "stopped":
         return f"{job.name}: 停止"
     return f"{job.name}: {job.status}"
+
+
+def _pid_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def _tmux_session_exists(label: str) -> bool:
+    if not label or shutil.which("tmux") is None:
+        return False
+    try:
+        completed = subprocess.run(["tmux", "has-session", "-t", label], text=True, capture_output=True, check=False)
+    except OSError:
+        return False
+    return completed.returncode == 0

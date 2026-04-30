@@ -1,0 +1,70 @@
+diff --git a/mujina_control/mujina_control/mujina_main.py b/mujina_control/mujina_control/mujina_main.py
+index 540fd8e..8bb7015 100644
+--- a/mujina_control/mujina_control/mujina_main.py
++++ b/mujina_control/mujina_control/mujina_main.py
+@@ -231,9 +231,9 @@ class BaseNode(Node):
+ 
+         with self.robot_state.lock:
+             self.robot_state.angle = [float(x) for x in P.STANDBY_ANGLE]
+-            self.robot_state.velocity = [float(x) for x in P.STANDBY_ANGLE]
+-            self.robot_state.current = [float(x) for x in P.STANDBY_ANGLE]
+-            self.robot_state.temperature = [float(x) for x in P.STANDBY_ANGLE]
++            self.robot_state.velocity = [0.0] * len(P.STANDBY_ANGLE)
++            self.robot_state.current = [0.0] * len(P.STANDBY_ANGLE)
++            self.robot_state.temperature = [0.0] * len(P.STANDBY_ANGLE)
+ 
+         with self.robot_command.lock:
+             self.robot_command.robot_mode = RobotModeCommand.STANDBY
+@@ -344,6 +347,9 @@ class BaseNode(Node):
+     ):
+         peripheral_state, robot_command = params
+         with peripheral_state.lock:
++            if len(msg.axes) < 4 or len(msg.buttons) < 3:
++                self.get_logger().warn('Ignoring joy message with insufficient axes/buttons')
++                return
+             peripheral_state.control_enable = True
+             peripheral_state.control_command = [
+                 msg.axes[1],
+@@ -395,7 +401,9 @@ class BaseNode(Node):
+     def mode_transition_command_callback(
+         self, msg: RobotMode, params: Tuple[RobotState, RobotCommand]
+     ):
+-        if msg.mode not in RobotModeCommand:
++        try:
++            requested_mode = RobotModeCommand(msg.mode)
++        except ValueError:
+             self.get_logger().error(
+                 f'Invalid mode command received: {msg.mode}'
+             )
+@@ -406,27 +414,27 @@ class BaseNode(Node):
+             robot_mode = robot_command.robot_mode
+ 
+         if robot_mode == RobotModeCommand.STANDBY:
+-            if msg.mode == RobotModeCommand.STANDUP:
++            if requested_mode == RobotModeCommand.STANDUP:
+                 self.get_logger().info('Changing mode from STANDBY to STANDUP')
+                 command_callback(
+                     RobotModeCommand.STANDUP, robot_state, robot_command
+                 )
+                 return
+         elif robot_mode == RobotModeCommand.STANDUP:
+-            if msg.mode == RobotModeCommand.STANDBY:
++            if requested_mode == RobotModeCommand.STANDBY:
+                 self.get_logger().info('Changing mode from STANDUP to STANDBY')
+                 command_callback(
+                     RobotModeCommand.STANDBY, robot_state, robot_command
+                 )
+                 return
+-            elif msg.mode == RobotModeCommand.WALK:
++            elif requested_mode == RobotModeCommand.WALK:
+                 self.get_logger().info('Changing mode from STANDUP to WALK')
+                 command_callback(
+                     RobotModeCommand.WALK, robot_state, robot_command
+                 )
+                 return
+         elif robot_mode == RobotModeCommand.WALK:
+-            if msg.mode == RobotModeCommand.STANDUP:
++            if requested_mode == RobotModeCommand.STANDUP:
+                 self.get_logger().info('Changing mode from WALK to STANDUP')
+                 command_callback(
+                     RobotModeCommand.STANDUP, robot_state, robot_command

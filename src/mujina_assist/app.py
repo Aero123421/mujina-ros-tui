@@ -36,9 +36,11 @@ from mujina_assist.services.jobs import (
     recent_jobs,
     release_job_claim,
     summarize_job,
+    stale_running_jobs,
     update_job,
 )
-from mujina_assist.services.motors import build_scan_result, parse_probe_output, save_scan_result
+from mujina_assist.services.live_health import wait_for_topic_health
+from mujina_assist.services.motors import build_scan_result, parse_probe_output, save_scan_result, validate_scan_for_real_launch
 from mujina_assist.services.policy import (
     activate_policy,
     all_policy_candidates,
@@ -174,10 +176,16 @@ class MujinaAssistApp:
             bullet("USBシリアル候補: " + ", ".join(report.serial_candidates[:4]))
 
         running_jobs = active_jobs(self.paths)
+        stale_jobs = stale_running_jobs(self.paths)
         if running_jobs:
             section("実行中ジョブ")
             for job in running_jobs[:8]:
-                bullet(f"{job.name} | ログ: {Path(job.log_path).name}")
+                stale = " / stale" if job in stale_jobs else ""
+                bullet(f"{job.name}{stale} | ログ: {Path(job.log_path).name}")
+        if stale_jobs:
+            section("stale job")
+            for job in stale_jobs[:5]:
+                bullet(f"{job.name}: running 記録はありますが terminal/tmux が確認できません。ログ確認後に停止扱いへ整理してください。")
 
         completed_jobs = [job for job in recent_jobs(self.paths, limit=8) if job.status not in {"queued", "running"}]
         if completed_jobs:
@@ -519,6 +527,8 @@ class MujinaAssistApp:
             error("現在の workspace + policy では SIM確認済みの記録がありません。")
             bullet("先に `SIM` を起動し、同じ条件で姿勢と入力応答を確認してから `SIM確認済み` を付けてください。")
             return 1
+        if not self._run_real_motor_preflight_scan(selected_can_mode):
+            return 1
         if not self._confirm_real_robot_safety_checklist():
             warn("実機起動前チェックを中止しました。")
             return 1
@@ -572,13 +582,49 @@ class MujinaAssistApp:
             self.save_state()
         return result
 
+    def _run_real_motor_preflight_scan(self, can_mode: str) -> bool:
+        section("Motor live check")
+        log_path = self.paths.logs_dir / f"real-preflight-motor-{datetime.now().strftime('%Y%m%d-%H%M%S')}.log"
+        result = run_bash(
+            build_motor_probe_script(self.paths, DEFAULT_MOTOR_IDS, can_mode, include_can_setup=False),
+            cwd=self.paths.workspace_dir,
+            log_path=log_path,
+            interactive=False,
+        )
+        if result.returncode != 0:
+            error("実機起動前の 12 軸 zero-gain query に失敗しました。")
+            bullet(f"ログ: {log_path}")
+            return False
+        output = log_path.read_text(encoding="utf-8", errors="ignore") if log_path.exists() else result.stdout
+        scan_result = build_scan_result(
+            parse_probe_output(output),
+            can_interface="can0",
+            scan_kind="zero_gain_one_shot_query",
+        )
+        scan_path = log_path.with_suffix(".json")
+        save_scan_result(scan_path, scan_result)
+        errors = validate_scan_for_real_launch(scan_result)
+        if errors:
+            error("実機起動前の motor live check が通っていません。")
+            for reason in errors[:8]:
+                bullet(reason)
+            bullet(f"scan: {scan_path}")
+            return False
+        success("実機起動前の motor live check が通りました。")
+        bullet(f"scan: {scan_path}")
+        return True
+
     def _launch_real_job_group(self, jobs: list[JobRecord]) -> int:
         section("段階起動")
-        bullet("1/3 IMU node を起動します。起動後は `/imu/data` の live health を必ず確認してください。")
-        bullet("2/3 mujina_main を起動します。起動後は `/robot_mode` / motor state を確認してください。")
-        bullet("3/3 joy node を起動します。起動後は `/joy` の axes/buttons を確認してください。")
-        bullet("現時点では topic wait の自動監視は未接続です。TUI では LOCK/WARN として表示します。")
-        return self._launch_job_group(jobs, heading="実機用ジョブを段階順に起動しました。")
+        return self._launch_supervised_job_group(
+            jobs,
+            stages=[
+                ("real_imu", "/imu/data", 15.0, 50.0),
+                ("real_main", "/robot_mode", 20.0, 1.0),
+                ("real_joy", "/joy", 15.0, 1.0),
+            ],
+            heading="実機用ジョブを段階起動しました。",
+        )
 
     def handle_policy_menu(self) -> int:
         title("policy を切り替える")
@@ -1288,6 +1334,70 @@ class MujinaAssistApp:
             if mode == "tmux":
                 bullet(f"tmux attach -t {label}")
         return 0
+
+    def _launch_supervised_job_group(
+        self,
+        jobs: list[JobRecord],
+        *,
+        stages: list[tuple[str, str, float, float]],
+        heading: str,
+    ) -> int:
+        by_kind = {job.kind: job for job in jobs}
+        launches: list[tuple[JobRecord, str, str, int | None]] = []
+        for index, (kind, topic, timeout_s, min_hz) in enumerate(stages, start=1):
+            job = by_kind[kind]
+            bullet(f"[{index}/{len(stages)}] {job.name} を起動します。wait: {topic}")
+            launch = launch_job(self.paths, job)
+            if not launch.ok:
+                mark_job_finished(job, returncode=1, message=launch.message)
+                error("段階起動の途中でジョブ起動に失敗しました。")
+                bullet(f"失敗したジョブ: {job.name}")
+                bullet(launch.message)
+                self._rollback_launched_jobs(launches)
+                return 1
+            update_job(job, terminal_mode=launch.mode, terminal_label=launch.label, terminal_pid=launch.pid)
+            claimed = self._wait_for_worker_claim(job)
+            if claimed is None or claimed.status in {"failed", "stopped"}:
+                message = "worker 起動を確認できませんでした。" if claimed is None else (claimed.message or f"{job.name} は起動直後に停止しました。")
+                mark_job_finished(job, returncode=1, message=message)
+                error("段階起動の途中で worker 起動確認に失敗しました。")
+                bullet(f"失敗したジョブ: {job.name}")
+                bullet(message)
+                self._rollback_launched_jobs(launches + [(job, launch.mode, launch.label, launch.pid)])
+                return 1
+            launches.append((job, launch.mode, launch.label, launch.pid))
+            if not wait_for_topic_health(topic, timeout_s=timeout_s, min_hz=min_hz):
+                error(f"{topic} の live health を確認できませんでした。")
+                bullet("この段階以降には進みません。起動済みジョブを停止します。")
+                self._rollback_launched_jobs(launches)
+                return 1
+            success(f"{topic} live health OK")
+        success(heading)
+        for job, mode, label, _pid in launches:
+            bullet(f"{job.name} | ログ: {job.log_path}")
+            if mode == "tmux":
+                bullet(f"tmux attach -t {label}")
+        return 0
+
+    def _rollback_launched_jobs(self, launches: list[tuple[JobRecord, str, str, int | None]]) -> None:
+        manual_recovery_jobs: list[str] = []
+        if launches:
+            section("巻き戻し")
+        for launched_job, mode, label, pid in launches:
+            stop_error = stop_job_launch(mode=mode, label=label, pid=pid)
+            if stop_error is None:
+                mark_job_stopped(launched_job, message="段階起動失敗のため停止しました。")
+                bullet(f"{launched_job.name} を停止しました。")
+            else:
+                update_job(launched_job, message=f"段階起動失敗。停止確認できませんでした: {stop_error}")
+                manual_recovery_jobs.append(launched_job.name)
+                bullet(f"{launched_job.name} は停止確認できませんでした: {stop_error}")
+        if manual_recovery_jobs:
+            self._set_manual_recovery_state(
+                kind="job_launch",
+                summary="段階起動失敗後に停止確認できなかったジョブがあります: " + ", ".join(manual_recovery_jobs),
+            )
+            self.save_state()
 
     def _confirm_no_conflicting_jobs(self, relevant_kinds: set[str], *, allow_override: bool = True) -> bool:
         conflicts = [job for job in active_jobs(self.paths) if job.kind in relevant_kinds]

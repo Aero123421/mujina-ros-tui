@@ -10,6 +10,7 @@ from mujina_assist.services.jobs import (
     active_jobs,
     acquire_job_claim,
     create_job,
+    stale_running_jobs,
     list_jobs,
     load_job,
     mark_job_running,
@@ -196,6 +197,18 @@ class JobsTest(unittest.TestCase):
             update_job(running, status="running", started_at="2026-03-22T00:00:00+09:00")
 
             jobs = active_jobs(paths)
+
+            self.assertEqual([job.job_id for job in jobs], [running.job_id])
+
+    def test_stale_running_jobs_reports_missing_terminal_process(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = AppPaths.from_repo_root(Path(tmp))
+            paths.ensure_directories()
+            running = create_job(paths, kind="real_main", name="real main")
+            update_job(running, status="running", terminal_mode="terminal", terminal_pid=999999)
+
+            with unittest.mock.patch("mujina_assist.services.jobs._pid_alive", return_value=False):
+                jobs = stale_running_jobs(paths)
 
             self.assertEqual([job.job_id for job in jobs], [running.job_id])
 

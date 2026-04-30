@@ -179,6 +179,32 @@ class AppTest(unittest.TestCase):
             self.assertTrue(app.state.manual_recovery_required)
             self.assertIn("sim main", app.state.manual_recovery_summary)
 
+    def test_launch_supervised_job_group_waits_for_each_topic(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            app = MujinaAssistApp(Path(tmp))
+            imu = create_job(app.paths, kind="real_imu", name="imu")
+            main = create_job(app.paths, kind="real_main", name="main")
+            joy = create_job(app.paths, kind="real_joy", name="joy")
+            launches = [
+                SimpleNamespace(ok=True, mode="tmux", label="imu", pid=None, message="ok"),
+                SimpleNamespace(ok=True, mode="tmux", label="main", pid=None, message="ok"),
+                SimpleNamespace(ok=True, mode="tmux", label="joy", pid=None, message="ok"),
+            ]
+
+            with patch("mujina_assist.app.launch_job", side_effect=launches), patch.object(
+                app,
+                "_wait_for_worker_claim",
+                side_effect=lambda job: update_job(job, status="running"),
+            ), patch("mujina_assist.app.wait_for_topic_health", return_value=True) as wait_mock:
+                result = app._launch_supervised_job_group(
+                    [imu, main, joy],
+                    stages=[("real_imu", "/imu/data", 1.0, 50.0), ("real_main", "/robot_mode", 1.0, 1.0), ("real_joy", "/joy", 1.0, 1.0)],
+                    heading="ok",
+                )
+
+            self.assertEqual(result, 0)
+            self.assertEqual([call.args[0] for call in wait_mock.call_args_list], ["/imu/data", "/robot_mode", "/joy"])
+
     def test_execute_zero_job_stops_when_probe_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             app = MujinaAssistApp(Path(tmp))

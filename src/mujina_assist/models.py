@@ -200,8 +200,18 @@ class LiveHealth:
     can_summary: str = ""
     imu_ok: bool = False
     imu_summary: str = ""
+    imu_topic_ok: bool = False
+    imu_hz: float | None = None
+    imu_quaternion_norm: float | None = None
+    imu_last_age_s: float | None = None
     joy_ok: bool = False
     joy_summary: str = ""
+    joy_topic_ok: bool = False
+    joy_axes_count: int = 0
+    joy_buttons_count: int = 0
+    joy_last_age_s: float | None = None
+    motor_ok: bool = False
+    motor_summary: str = ""
     ros_available: bool = False
     ros_summary: str = ""
     warnings: list[str] = field(default_factory=list)

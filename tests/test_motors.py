@@ -14,6 +14,7 @@ from mujina_assist.services.motors import (
     load_scan_result,
     parse_probe_output,
     save_scan_result,
+    validate_scan_for_real_launch,
 )
 
 
@@ -57,6 +58,20 @@ motor 11: pos=0.002 vel=0.001 cur=0.200 temp=31.9
         self.assertEqual(entries[0].position_rad, -0.003)
         self.assertEqual(entries[1].motor_id, 11)
         self.assertEqual(entries[2].status, "timeout")
+
+    def test_validate_scan_for_real_launch_requires_all_axes_stationary(self) -> None:
+        entries = [
+            MotorScanEntry(joint, motor_id, responded=True, position_rad=0.0, velocity_rad_s=0.0, temperature_c=31.0, error_code="0x00", status="ok")
+            for joint, motor_id in zip(JOINT_ORDER, DEFAULT_MOTOR_IDS)
+        ]
+        result = build_scan_result(entries)
+
+        self.assertEqual(validate_scan_for_real_launch(result), [])
+
+        entries[0].velocity_rad_s = 1.0
+        result = build_scan_result(entries)
+
+        self.assertTrue(validate_scan_for_real_launch(result))
 
     def test_parse_probe_output_accepts_upstream_probe_format(self) -> None:
         output = "Motor 10 Position: -0.003, Velocity: 0.0, Torque: 0.1, Temp: 32.1\n"
