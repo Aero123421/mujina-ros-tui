@@ -15,6 +15,10 @@ class UiTest(unittest.TestCase):
         with patch("builtins.input", return_value="いいえ"):
             self.assertFalse(ask_yes_no("続けますか？", default=True))
 
+    def test_ask_yes_no_uses_default_on_eof(self) -> None:
+        with patch("builtins.input", side_effect=EOFError):
+            self.assertTrue(ask_yes_no("続けますか？", default=True))
+
 
 if __name__ == "__main__":
     unittest.main()

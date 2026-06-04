@@ -119,6 +119,7 @@ if TEXTUAL_IMPORT_ERROR is None:
             ("i", "open_screen('device')", "Device"),
             ("r", "open_screen('real-preflight')", "Real"),
             ("l", "open_screen('logs')", "Logs"),
+            ("x", "show_repair_command", "Repair"),
             ("?", "open_screen('help')", "Help"),
         ]
 
@@ -184,6 +185,9 @@ if TEXTUAL_IMPORT_ERROR is None:
 
         def show_cli_required(self, command: str, reason: str) -> None:
             self.notify(f"{reason}: {command}", severity="warning", timeout=10)
+
+        def action_show_repair_command(self) -> None:
+            self.notify("stale job や壊れた状態の整理: ./start.sh repair", severity="warning", timeout=10)
 
 
     MujinaAssistTuiApp = MujinaAssistTui

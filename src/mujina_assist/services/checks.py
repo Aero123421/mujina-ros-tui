@@ -160,6 +160,19 @@ def build_doctor_report(paths: AppPaths, state: RuntimeState) -> DoctorReport:
     if not active_policy_source and paths.source_policy_path.exists():
         active_policy_source = str(paths.source_policy_path)
 
+    has_imu = bool(imu_port and not imu_fallback)
+    has_can_device = bool(devices.get("can0") or devices.get("/dev/usb_can"))
+    has_gamepad = bool(devices.get("/dev/input/js0", False))
+    if workspace_built and not has_imu and not has_can_device:
+        environment_mode = "vm"
+        environment_summary = "VM / SIM検証モード（実機デバイス未接続は正常）"
+    elif has_imu and has_can_device and has_gamepad:
+        environment_mode = "real"
+        environment_summary = "実機接続モード（実機前診断を通してから起動）"
+    else:
+        environment_mode = "mixed"
+        environment_summary = "実機準備中（一部デバイスまたは設定が未確認）"
+
     policy_cache_count = 0
     policy_cache_size_bytes = 0
     if paths.policy_index_file.exists():
@@ -198,6 +211,7 @@ def build_doctor_report(paths: AppPaths, state: RuntimeState) -> DoctorReport:
             "SIM確認",
             "ok" if sim_ready else "warn",
             "確認済み" if sim_ready else "未確認",
+            next_steps=["`./start.sh sim` で起動し、MuJoCoの姿勢と /joy 入力を見てから `./start.sh sim-verified`。"],
         ),
         DoctorCheck(
             "imu",
@@ -218,6 +232,8 @@ def build_doctor_report(paths: AppPaths, state: RuntimeState) -> DoctorReport:
             "ゲームパッド",
             "ok" if devices.get("/dev/input/js0", False) else "warn",
             "接続済み" if devices.get("/dev/input/js0", False) else "未接続",
+            details=["存在確認だけでは不十分です。/joy の axes/buttons 数も確認してください。"] if devices.get("/dev/input/js0", False) else [],
+            next_steps=["Logicool F710 / F310 は X mode、MODE LED OFF。SIM起動後に /joy axes/buttons を確認。"],
         ),
         DoctorCheck(
             "real_setup",
@@ -228,6 +244,7 @@ def build_doctor_report(paths: AppPaths, state: RuntimeState) -> DoctorReport:
     ]
 
     notes: list[str] = []
+    notes.append(environment_summary)
     if state.real_setup_requires_relogin:
         notes.append("dialout / udev の設定を反映した直後です。いったんログアウト / ログインしてから実機前診断をやり直してください。")
     if not sim_policy_verified(state):
@@ -241,7 +258,7 @@ def build_doctor_report(paths: AppPaths, state: RuntimeState) -> DoctorReport:
     if can_health.present and not can_health.ok:
         notes.append("can0 は見えていますが、現在の状態は健全ではありません。電源再投入後は公式の can_setup 手順をやり直してください。")
     if devices.get("/dev/input/js0", False):
-        notes.append("gamepad の認識だけでは不十分です。Logicool F710 / F310 の X mode、MODE LED OFF を確認してください。")
+        notes.append("gamepad の認識だけでは不十分です。Logicool F710 / F310 の X mode、MODE LED OFF、/joy の axes/buttons 数を確認してください。")
 
     recommendation = "まず `保守・診断` で不足項目を潰してから進めてください。"
     if state.real_setup_requires_relogin:
@@ -270,6 +287,8 @@ def build_doctor_report(paths: AppPaths, state: RuntimeState) -> DoctorReport:
         workspace_cloned=workspace_cloned,
         workspace_built=workspace_built,
         active_policy_label=active_policy_label,
+        environment_mode=environment_mode,
+        environment_summary=environment_summary,
         active_policy_source=active_policy_source,
         active_policy_hash=active_policy_hash,
         usb_policy_count=count_usb_policies(),

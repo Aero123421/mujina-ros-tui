@@ -177,6 +177,8 @@ class DoctorReport:
     workspace_cloned: bool
     workspace_built: bool
     active_policy_label: str
+    environment_mode: str = ""
+    environment_summary: str = ""
     active_policy_source: str = ""
     active_policy_hash: str = ""
     usb_policy_count: int = 0

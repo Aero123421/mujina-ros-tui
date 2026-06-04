@@ -134,6 +134,56 @@ class AppTest(unittest.TestCase):
             self.assertTrue(jobs[0].payload["skip_upgrade"])
             self.assertTrue(jobs[0].payload["setup_real_devices"])
 
+    def test_setup_runs_inline_when_tmux_and_gui_are_unavailable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            app = MujinaAssistApp(Path(tmp))
+            job = create_job(app.paths, kind="setup", name="初回セットアップ")
+
+            with patch("mujina_assist.app.has_graphical_session", return_value=False), patch(
+                "mujina_assist.app.command_exists",
+                return_value=False,
+            ), patch.object(app, "run_worker", return_value=0) as run_worker_mock, patch(
+                "mujina_assist.app.launch_job"
+            ) as launch_job_mock:
+                result = app._launch_job(job)
+
+            self.assertEqual(result, 0)
+            run_worker_mock.assert_called_once_with(job.job_file)
+            launch_job_mock.assert_not_called()
+
+    def test_repair_marks_stale_job_stopped_and_removes_claim(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            app = MujinaAssistApp(Path(tmp))
+            job = create_job(app.paths, kind="sim_main", name="SIM 本体")
+            update_job(job, status="running", terminal_mode="terminal", terminal_pid=999999)
+            claim_path = Path(job.job_file).with_suffix(f"{Path(job.job_file).suffix}.claim")
+            claim_path.write_text('{"token":"old"}\n', encoding="utf-8")
+
+            report = DoctorReport(
+                os_label="Ubuntu 24.04",
+                ubuntu_24_04=True,
+                ros_installed=True,
+                workspace_cloned=True,
+                workspace_built=True,
+                active_policy_label="公式デフォルト",
+                recommendation="SIM確認を続けてください。",
+            )
+            with patch("mujina_assist.services.jobs._pid_alive", return_value=False), patch(
+                "mujina_assist.app.build_doctor_report",
+                return_value=report,
+            ):
+                self.assertEqual(app.handle_repair(), 0)
+
+            repaired = list_jobs(app.paths)[0]
+            self.assertEqual(repaired.status, "stopped")
+            self.assertFalse(claim_path.exists())
+
+    def test_user_stop_returncodes_include_sigterm(self) -> None:
+        self.assertTrue(MujinaAssistApp._is_user_stop_returncode(130))
+        self.assertTrue(MujinaAssistApp._is_user_stop_returncode(143))
+        self.assertTrue(MujinaAssistApp._is_user_stop_returncode(-15))
+        self.assertFalse(MujinaAssistApp._is_user_stop_returncode(1))
+
     def test_handle_sim_creates_two_jobs_and_updates_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             app = MujinaAssistApp(Path(tmp))

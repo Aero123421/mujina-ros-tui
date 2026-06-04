@@ -32,7 +32,7 @@ EXPECTED_SCREENS = {
     "logs",
     "help",
 }
-EXPECTED_KEYBINDS = {"d", "s", "p", "m", "z", "c", "i", "r", "l", "?", "q"}
+EXPECTED_KEYBINDS = {"d", "s", "p", "m", "z", "c", "i", "r", "l", "x", "?", "q"}
 
 
 @unittest.skipIf(tui_app_module is None, f"{REQUIRED_TUI_API} is not implemented yet")

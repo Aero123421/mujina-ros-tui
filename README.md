@@ -18,6 +18,7 @@
 - 実機起動前に不足している条件を `LOCK` として表示する
 - real launch 前に 12 軸 zero-gain query、`/imu/data`、`/robot_mode`、`/joy` の live health を段階確認する
 - 長い処理や常駐プロセスを job として管理し、ログを追う
+- stale job や残った claim を `repair` で整理し、壊れた状態から再実行しやすくする
 
 ## 想定環境
 
@@ -50,8 +51,11 @@ cd mujina-ros-tui
 ./start.sh doctor
 ./start.sh build
 ./start.sh sim
+./start.sh repair
 ./start.sh policy --test
 ```
+
+`./start.sh repair` は workspace を削除したり巻き戻したりせず、stale job、古い claim、ジョブ起動失敗由来の手動復旧フラグを整理します。途中で止めた SIM や setup の後に、まず `doctor` と `repair` を実行すると状態を戻しやすくなります。
 
 Windows PowerShell で画面だけ確認する場合:
 
@@ -60,6 +64,7 @@ python -m mujina_assist.main tui
 ```
 
 ROS や実機デバイスがない環境では、TUI 上の各チェックは `WARN` / `LOCK` として表示されます。
+Ubuntu VM で SIM だけ確認している場合、IMU / CAN 未接続は故障ではありません。実機起動だけがロック対象です。
 
 ## offline install / wheelhouse
 
@@ -95,6 +100,7 @@ TUI では下部 footer の keybind から各画面へ移動します。
 | `i` | Device |
 | `r` | Real |
 | `l` | Logs |
+| `x` | Repair command |
 | `?` | Help |
 | `q` | Quit |
 

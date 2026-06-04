@@ -21,12 +21,14 @@ from mujina_assist.services.checks import (
     workspace_build_ready,
     workspace_clone_ready,
     write_config_file,
+    command_exists,
 )
 from mujina_assist.services.can import detect_slcand_processes, evaluate_can_health, slcand_summary
 from mujina_assist.services.jobs import (
     acquire_job_claim,
     active_jobs,
     create_job,
+    job_is_stale,
     job_log_path,
     list_jobs,
     load_job,
@@ -69,7 +71,7 @@ from mujina_assist.services.processes import (
 from mujina_assist.services.shell import run_bash
 from mujina_assist.services.safety import evaluate_real_preflight, p0_reasons
 from mujina_assist.services.state import load_runtime_state, save_runtime_state
-from mujina_assist.services.terminals import launch_job, stop_job_launch
+from mujina_assist.services.terminals import has_graphical_session, launch_job, stop_job_launch
 from mujina_assist.services.upstream import sync_runtime_workspace_state
 from mujina_assist.services.workspace import (
     capture_default_policy,
@@ -155,6 +157,8 @@ class MujinaAssistApp:
         report = build_doctor_report(self.paths, self.state)
         title("Mujina Assist")
         section("現在の状態")
+        if report.environment_summary:
+            bullet(f"環境: {report.environment_summary}")
         bullet(f"OS: {report.os_label}")
         bullet(f"Ubuntu 24.04: {'OK' if report.ubuntu_24_04 else '未確認'}")
         bullet(f"ROS 2 Jazzy: {'OK' if report.ros_installed else '未導入'}")
@@ -183,6 +187,14 @@ class MujinaAssistApp:
         if report.serial_candidates:
             bullet("USBシリアル候補: " + ", ".join(report.serial_candidates[:4]))
 
+        attention_checks = [check for check in report.checks if check.status in {"warn", "ng"}]
+        if attention_checks:
+            section("確認が必要な項目")
+            for check in attention_checks[:6]:
+                bullet(f"{check.label}: {check.summary}")
+                for step in check.next_steps[:2]:
+                    bullet(f"  次: {step}")
+
         running_jobs = active_jobs(self.paths)
         stale_jobs = stale_running_jobs(self.paths)
         stale_queued = stale_queued_jobs(self.paths)
@@ -195,6 +207,7 @@ class MujinaAssistApp:
             section("stale job")
             for job in stale_jobs[:5]:
                 bullet(f"{job.name}: running 記録はありますが terminal/tmux が確認できません。ログ確認後に停止扱いへ整理してください。")
+            bullet("整理するには `./start.sh repair` を実行してください。")
         if stale_queued:
             section("起動未完了ジョブ")
             for job in stale_queued[:5]:
@@ -202,6 +215,7 @@ class MujinaAssistApp:
                     f"{job.name}: queued のまま worker が開始していません。"
                     f"ログ: {Path(job.log_path).name} / 必要なら再実行してください。"
                 )
+            bullet("整理するには `./start.sh repair` を実行してください。")
 
         completed_jobs = [job for job in recent_jobs(self.paths, limit=8) if job.status not in {"queued", "running"}]
         if completed_jobs:
@@ -346,6 +360,7 @@ class MujinaAssistApp:
                 "状況確認と自動診断を行います。",
                 [
                     "状態確認",
+                    "復旧 / repair",
                     "実機前診断",
                     "モータ診断",
                     "ロボット診断",
@@ -358,12 +373,14 @@ class MujinaAssistApp:
             if choice == 0:
                 self.handle_doctor()
             elif choice == 1:
-                self.handle_preflight()
+                self.handle_repair()
             elif choice == 2:
-                self.handle_motor_diagnostics()
+                self.handle_preflight()
             elif choice == 3:
-                self.handle_robot_diagnostics()
+                self.handle_motor_diagnostics()
             elif choice == 4:
+                self.handle_robot_diagnostics()
+            elif choice == 5:
                 self.handle_logs()
             pause()
 
@@ -371,6 +388,68 @@ class MujinaAssistApp:
         self._sync_relogin_requirement()
         self.print_status()
         return 0
+
+    def handle_repair(self) -> int:
+        title("復旧 / Repair")
+        jobs = list_jobs(self.paths)
+        stale = [job for job in jobs if job.status in {"queued", "running"} and job_is_stale(job)]
+        if stale:
+            section("stale job を停止扱いに整理")
+            for job in stale:
+                mark_job_stopped(job, returncode=130, message="repair により stale job を停止扱いにしました。")
+                bullet(f"{job.name}: stopped")
+        else:
+            success("stale job はありません。")
+
+        removed_claims = self._remove_orphan_job_claims()
+        if removed_claims:
+            section("古い claim を削除")
+            for claim in removed_claims[:8]:
+                bullet(claim.name)
+            if len(removed_claims) > 8:
+                bullet(f"...ほか {len(removed_claims) - 8} 件")
+        else:
+            success("古い claim はありません。")
+
+        if self.state.manual_recovery_required and self.state.manual_recovery_kind in {"job_launch", "launch_group"}:
+            self._clear_manual_recovery_state()
+            self.save_state()
+            success("ジョブ起動失敗由来の手動復旧フラグを解除しました。")
+
+        report = build_doctor_report(self.paths, self.state)
+        section("次の一手")
+        bullet(report.recommendation or "`./start.sh doctor` で状態を確認してください。")
+        if not report.workspace_cloned or not report.ros_installed:
+            bullet("ROS / workspace が不足しています。`./start.sh setup` を再実行してください。")
+        elif not report.workspace_built:
+            bullet("workspace が未ビルドです。`./start.sh build` を実行してください。")
+        elif not report.sim_ready:
+            bullet("SIM確認が未完了です。`./start.sh sim` のあと `./start.sh sim-verified` を使ってください。")
+        success("repair が完了しました。")
+        return 0
+
+    def _remove_orphan_job_claims(self) -> list[Path]:
+        removed: list[Path] = []
+        for claim_path in sorted(self.paths.jobs_dir.glob("*.json.claim")):
+            job_path = claim_path.with_suffix("")
+            remove = False
+            if not job_path.exists():
+                remove = True
+            else:
+                try:
+                    job = load_job(job_path)
+                except Exception:
+                    remove = True
+                else:
+                    remove = job.status not in {"queued", "running"} or job_is_stale(job)
+            if not remove:
+                continue
+            try:
+                claim_path.unlink()
+            except OSError:
+                continue
+            removed.append(claim_path)
+        return removed
 
     def handle_preflight(self, can_mode: str = "auto") -> int:
         title("実機前診断")
@@ -1017,6 +1096,7 @@ class MujinaAssistApp:
         skip_upgrade = bool(job.payload.get("skip_upgrade", False))
         setup_real_devices = bool(job.payload.get("setup_real_devices", False))
 
+        self._record_job_stage(log_path, "1/5 OS / ROS 2 Jazzy の準備")
         initial = run_initial_setup(self.paths, log_path, skip_upgrade=skip_upgrade)
         if initial.returncode != 0:
             self._report_failure(
@@ -1026,6 +1106,7 @@ class MujinaAssistApp:
                 next_steps=["ログを確認して依存関係を整えてください。"],
             )
             return initial.returncode, "初回セットアップに失敗しました。", False
+        self._record_job_stage(log_path, "2/5 mujina_ros clone / patch 適用")
         clone_result = ensure_upstream_clone(self.paths, log_path)
         if clone_result.returncode != 0:
             self._report_failure(
@@ -1035,6 +1116,7 @@ class MujinaAssistApp:
                 next_steps=["ネットワークを確認して再試行してください。"],
             )
             return clone_result.returncode, "mujina_ros の clone に失敗しました。", False
+        self._record_job_stage(log_path, "3/5 rosdep / Python 依存関係")
         deps = run_workspace_dependency_setup(self.paths, log_path)
         if deps.returncode != 0:
             self._report_failure(
@@ -1044,6 +1126,7 @@ class MujinaAssistApp:
                 next_steps=["ログを見て足りない依存関係を解消してください。"],
             )
             return deps.returncode, "依存関係セットアップに失敗しました。", False
+        self._record_job_stage(log_path, "4/5 colcon build")
         build = run_workspace_build(self.paths, log_path)
         if build.returncode != 0:
             self._report_failure(
@@ -1054,6 +1137,7 @@ class MujinaAssistApp:
             )
             return build.returncode, "workspace のビルドに失敗しました。", False
         if setup_real_devices:
+            self._record_job_stage(log_path, "5/5 実機用 udev / dialout")
             real = run_real_device_setup(self.paths, log_path)
             if real.returncode != 0:
                 self._report_failure(
@@ -1065,6 +1149,8 @@ class MujinaAssistApp:
                 return real.returncode, "実機用設定に失敗しました。", False
             setup_status = real_setup_status()
             self.state.real_setup_requires_relogin = not (setup_status.get("dialout") and setup_status.get("udev_rule"))
+        else:
+            self._record_job_stage(log_path, "5/5 実機用 udev / dialout はスキップ")
         capture_default_policy(self.paths)
         self._clear_manual_recovery_state(kind="policy")
         self.state.last_action = "setup"
@@ -1073,6 +1159,16 @@ class MujinaAssistApp:
         self._sync_default_policy_state()
         self.save_state()
         return 0, "初回セットアップが完了しました。", False
+
+    def _record_job_stage(self, log_path: Path, label: str) -> None:
+        line = f"[Mujina Assist] setup stage: {label}"
+        section(label)
+        try:
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            with log_path.open("a", encoding="utf-8") as handle:
+                handle.write(line + "\n")
+        except OSError:
+            pass
 
     def _execute_build_job(self, job: JobRecord) -> tuple[int, str, bool]:
         log_path = job_log_path(job)
@@ -1297,14 +1393,23 @@ class MujinaAssistApp:
             success(success_message)
             bullet(f"ログ: {job.log_path}")
             return 0, success_message, False
-        if allow_sigint_stop and result.returncode == 130:
+        if allow_sigint_stop and self._is_user_stop_returncode(result.returncode):
             warn("ユーザー操作で停止しました。")
             bullet(f"ログ: {job.log_path}")
             return 130, "ユーザー操作で停止しました。", True
         self._report_failure(f"{job.name} に失敗しました。", job_log_path(job), causes=causes, next_steps=next_steps)
         return result.returncode, f"{job.name} に失敗しました。", False
 
+    @staticmethod
+    def _is_user_stop_returncode(returncode: int) -> bool:
+        return returncode in {130, 143, -2, -15}
+
     def _launch_job(self, job: JobRecord) -> int:
+        if job.kind == "setup" and not has_graphical_session() and not command_exists("tmux"):
+            warn("tmux と GUI 端末がまだ使えないため、この端末内で初回セットアップを実行します。")
+            bullet("sudo のパスワード入力が必要な場合は、この画面に表示されます。")
+            return self.run_worker(job.job_file)
+
         launch = launch_job(self.paths, job)
         if not launch.ok:
             mark_job_finished(job, returncode=1, message=launch.message)
@@ -1907,6 +2012,7 @@ def build_parser() -> argparse.ArgumentParser:
     setup_parser.add_argument("--skip-upgrade", action="store_true")
 
     subparsers.add_parser("doctor")
+    subparsers.add_parser("repair")
 
     preflight_parser = subparsers.add_parser("preflight")
     preflight_parser.add_argument("--can-mode", choices=["auto", "net", "serial"], default="auto")
@@ -1961,6 +2067,8 @@ def run_app(repo_root: Path, argv: list[str] | None = None) -> int:
         return app.handle_setup(skip_upgrade=args.skip_upgrade)
     if command == "doctor":
         return app.handle_doctor()
+    if command == "repair":
+        return app.handle_repair()
     if command == "preflight":
         return app.handle_preflight(can_mode=args.can_mode)
     if command == "build":

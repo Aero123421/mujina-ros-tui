@@ -81,6 +81,14 @@ def _reason_status(priority: str) -> str:
     return {"P0": "lock", "P1": "warn", "P2": "wait"}.get(priority, "warn")
 
 
+def _environment_short(report: "DoctorReport") -> str:
+    return {
+        "vm": "VM/SIM",
+        "real": "実機接続",
+        "mixed": "実機準備中",
+    }.get(report.environment_mode, "未判定")
+
+
 def _safety_state(paths: "AppPaths", state: "RuntimeState", report: "DoctorReport") -> SafetyState:
     manifest = _active_policy_manifest_validation(report)
     zero_profile = validate_zero_profile(paths.active_zero_profile_file) if paths.active_zero_profile_file.exists() else None
@@ -155,6 +163,7 @@ if TEXTUAL_IMPORT_ERROR is None:
             ("i", "app.open_screen('device')", "Device"),
             ("r", "app.open_screen('real-preflight')", "Real"),
             ("l", "app.open_screen('logs')", "Logs"),
+            ("x", "app.show_repair_command", "Repair"),
             ("?", "app.open_screen('help')", "Help"),
         ]
 
@@ -201,6 +210,7 @@ if TEXTUAL_IMPORT_ERROR is None:
             self.set_interval(2.0, self._refresh)
 
         def _flow_items(self, report: "DoctorReport", safety: SafetyState) -> list[FlowItem]:
+            vm_mode = report.environment_mode == "vm"
             policy_status = _status_from_reasons(
                 safety,
                 {"policy_unknown", "sim_unverified", "policy_manifest_missing", "policy_manifest_invalid", "policy_manifest_warning"},
@@ -212,16 +222,22 @@ if TEXTUAL_IMPORT_ERROR is None:
                 default="ok" if report.real_devices.get("can0") else "warn",
             )
             imu_status = _status_from_reasons(safety, {"imu_missing"}, default="ok" if report.imu_port_label else "warn")
+            if vm_mode:
+                can_status = "wait"
+                imu_status = "wait"
+                policy_status = "ok" if report.active_policy_hash else "warn"
             zero_status = _status_from_reasons(
                 safety,
                 {"zero_profile_missing", "zero_profile_invalid", "zero_profile_warning"},
                 default="ok",
             )
+            if vm_mode:
+                zero_status = "wait"
             preflight_status = "lock" if safety.real_launch_locked else ("warn" if safety.standup_locked else "ok")
             return [
                 FlowItem("setup", "Setup", "ok" if report.workspace_cloned else "warn", "workspace / upstream 準備"),
-                FlowItem("device", "Device", imu_status, "IMU / USB-CAN / joy"),
-                FlowItem("can", "CAN", can_status, "SocketCAN / serial CAN"),
+                FlowItem("device", "Device", imu_status, "VMでは未接続OK" if vm_mode else "IMU / USB-CAN / joy"),
+                FlowItem("can", "CAN", can_status, "VMでは未接続OK" if vm_mode else "SocketCAN / serial CAN"),
                 FlowItem("motor", "Motor", "wait", "12軸の zero-gain one-shot query"),
                 FlowItem("zero", "Zero", zero_status, "zero profile / post verification"),
                 FlowItem("policy", "Policy", policy_status, report.active_policy_label),
@@ -237,7 +253,8 @@ if TEXTUAL_IMPORT_ERROR is None:
             safety = _safety_state(self.paths, self.state, report)
             self.query_one("#dashboard-title", Static).update(
                 "[b]Mujina Assist[/b]  [dim]実機運用コックピット[/dim]\n"
-                f"[dim]workspace={'ready' if report.workspace_cloned else 'missing'}  "
+                f"[dim]{_environment_short(report)}  "
+                f"workspace={'ready' if report.workspace_cloned else 'missing'}  "
                 f"build={'ready' if report.workspace_built else 'pending'}  "
                 f"policy={report.active_policy_label}  "
                 f"sim={'verified' if report.sim_ready else 'not verified'}[/dim]"
@@ -245,10 +262,11 @@ if TEXTUAL_IMPORT_ERROR is None:
 
             status_lines = [
                 "[b]System[/b]",
+                f"Mode       {_badge('ok' if report.environment_mode == 'real' else 'wait')}  {_environment_short(report)}",
                 f"Workspace  {_badge('ok' if report.workspace_cloned else 'warn')}  {'ready' if report.workspace_cloned else 'missing'}",
                 f"Build      {_badge('ok' if report.workspace_built else 'warn')}  {'complete' if report.workspace_built else 'pending'}",
                 f"Policy     {_badge('ok' if report.active_policy_hash else 'warn')}  {report.active_policy_label}",
-                f"SIM        {_badge('ok' if report.sim_ready else 'lock')}  {report.sim_verified_at or 'not verified'}",
+                f"SIM        {_badge('ok' if report.sim_ready else 'warn')}  {report.sim_verified_at or 'not verified'}",
                 "",
                 "[b]Devices[/b]",
                 f"IMU        {_badge('ok' if report.imu_port_label and not report.imu_port_fallback else 'warn')}  {report.imu_port_label or 'missing'}",
@@ -259,7 +277,9 @@ if TEXTUAL_IMPORT_ERROR is None:
                 status_lines.extend(["", f"[b]Next[/b]  {report.recommendation}"])
             self.query_one("#status-summary", Static).update("\n".join(status_lines))
 
-            locks = ["[b]Launch Locks[/b]  [dim]evaluate_real_preflight[/dim]"]
+            locks = ["[b]Real Launch Locks[/b]  [dim]実機起動だけの制約です[/dim]"]
+            if report.environment_mode == "vm":
+                locks.append("[cyan]- VM/SIM確認中: IMU/CAN未接続は故障ではありません。[/]")
             if safety.manual_recovery_required:
                 locks.append(f"{_badge('lock')} P0 manual recovery: {safety.manual_recovery_summary or '未解決'}")
             for reason in safety.reasons:
@@ -288,7 +308,7 @@ if TEXTUAL_IMPORT_ERROR is None:
             flow.clear()
             new_index = 0
             for index, item in enumerate(self._flow_items(report, safety)):
-                row = ListItem(Label(f"{_status_icon(item.status):<4} {item.label:<15} {item.summary}"))
+                row = ListItem(Label(f"{_status_icon(item.status):<4} {item.label}"))
                 row.mujina_key = item.key
                 flow.append(row)
                 if item.key == highlighted_key:
@@ -699,6 +719,7 @@ if TEXTUAL_IMPORT_ERROR is None:
                             "i: Device",
                             "r: Real Preflight",
                             "l: Logs",
+                            "x: Repair command",
                             "?: Help",
                             "q: Quit",
                             "",

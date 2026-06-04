@@ -93,6 +93,45 @@ class ChecksTest(unittest.TestCase):
             self.assertIn("固定名デバイス", joined)
             self.assertIn("代替ポート", joined)
             self.assertNotIn("slcand", joined)
+            self.assertEqual(report.environment_mode, "mixed")
+
+    def test_doctor_report_labels_built_no_device_environment_as_vm(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = AppPaths.from_repo_root(Path(tmp))
+            paths.ensure_directories()
+            (paths.workspace_dir / "install" / "mujina_control").mkdir(parents=True)
+            (paths.workspace_dir / "install" / "setup.bash").write_text("", encoding="utf-8")
+            with patch(
+                "mujina_assist.services.checks.read_os_release",
+                return_value={"VERSION_ID": "24.04", "PRETTY_NAME": "Ubuntu 24.04"},
+            ), patch(
+                "mujina_assist.services.checks.detect_real_devices",
+                return_value={
+                    "/dev/rt_usb_imu": False,
+                    "/dev/usb_can": False,
+                    "can0": False,
+                    "/dev/input/js0": False,
+                },
+            ), patch(
+                "mujina_assist.services.checks.real_setup_status",
+                return_value={"dialout": False, "udev_rule": False},
+            ), patch(
+                "mujina_assist.services.checks.resolve_imu_port",
+                return_value=(None, False, []),
+            ), patch(
+                "mujina_assist.services.checks.command_exists",
+                return_value=True,
+            ), patch(
+                "mujina_assist.services.checks.graphical_terminal_available",
+                return_value=True,
+            ), patch(
+                "mujina_assist.services.checks.inspect_can_status",
+                return_value={"present": False, "operstate": "missing", "controller_state": "", "txqueuelen": None, "raw": "", "ok": False, "warn": False},
+            ):
+                report = build_doctor_report(paths, RuntimeState())
+
+        self.assertEqual(report.environment_mode, "vm")
+        self.assertIn("VM", report.environment_summary)
 
     def test_doctor_report_marks_fallback_imu_as_warning(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

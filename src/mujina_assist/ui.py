@@ -46,7 +46,11 @@ def bullet(text: str) -> None:
 def ask_yes_no(prompt: str, default: bool = False) -> bool:
     suffix = "[Y/n]" if default else "[y/N]"
     while True:
-        answer = input(f"{prompt} {suffix} ").strip().lower()
+        try:
+            answer = input(f"{prompt} {suffix} ").strip().lower()
+        except EOFError:
+            warn(f"入力が閉じられたため既定値 {suffix} を使います。")
+            return default
         if not answer:
             return default
         if answer in {"y", "yes", "ye", "はい", "hai", "h"}:
