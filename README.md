@@ -8,6 +8,8 @@
 
 公式の `mujina_ros` は `third_party/mujina_ros` に固定 commit で同梱しています。この repository は公式 package の置き換えではなく、作業用 workspace の生成、状態確認、policy / zero profile の確認、実機起動前のロック条件表示をまとめる補助ツールです。
 
+初めて使う場合は、まず [画像付き使い方ガイド](docs/usage.md) を見てください。Ubuntu VM上で実際にTUIを開いて撮ったスクリーンショット付きで、setup、policy、SIM、real preflight、real launch、logs の見方をまとめています。
+
 ## できること
 
 - 起動直後に workspace / build / policy / device / CAN / motor / zero / SIM / real preflight の状態を確認する
@@ -110,8 +112,10 @@ TUI では下部 footer の keybind から各画面へ移動します。
 - CAN: `n` で network CAN setup、`u` で serial CAN setup、`F5` で状態再取得を行います。
 - Motor: `n` / `u` で全12軸 read-only query job を network / serial CAN で起動します。値は Logs の job log で確認します。
 - Zero: `n` / `u` で zero 前の read-only query を起動できます。原点書き込みは `./start.sh zero` の確認付き CLI に委譲します。
-- Policy: `t` で ONNX 読み込みテスト job を起動します。policy 切替は manifest 確認があるため `./start.sh policy` を使います。
-- Real Preflight / Real Launch: TUI はロック理由を表示します。実機起動は operator checklist と `REAL` 入力を通すため `./start.sh robot` を使います。
+- Policy: `a` で候補をARM、`w` でARM済み候補への切替jobを起動、`t` でONNX読み込みテスト、`F5` でUSB/cache候補を再スキャンします。manifestなし外部policyはTUIではARMできません。
+- Simulation: `o` でSIM本体とjoyノードを起動、`v` で現在のworkspace + policyをSIM確認済みにします。
+- Real Preflight: `f` で確認付きCLI `./start.sh preflight` を起動します。
+- Real Launch: Dashboard のFlow一覧から開きます。`n` / `u` でCAN mode、`1` / `2` / `3` でoperator checklist、`REAL` 入力後に `Enter` / `Ctrl+E` で段階起動します。P0/P1/P2 lockや競合jobが残っている場合は起動しません。
 
 ## Repository 構成
 
