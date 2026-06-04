@@ -146,7 +146,7 @@ class AppTest(unittest.TestCase):
                 result = app._launch_job(job)
 
             self.assertEqual(result, 0)
-            run_worker_mock.assert_called_once_with(job.job_file)
+            run_worker_mock.assert_called_once_with(Path(job.job_file))
             launch_job_mock.assert_not_called()
 
     def test_repair_marks_stale_job_stopped_and_removes_claim(self) -> None:

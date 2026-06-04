@@ -1488,7 +1488,7 @@ class MujinaAssistApp:
             warn("初回セットアップはこの端末内で実行します。")
             bullet("sudo のパスワード入力が必要な場合は、この画面に表示されます。")
             bullet("apt / rosdep / colcon build が終わるまで、この端末を開いたままにしてください。")
-            return self.run_worker(job.job_file)
+            return self.run_worker(Path(job.job_file))
 
         launch = launch_job(self.paths, job)
         if not launch.ok:
