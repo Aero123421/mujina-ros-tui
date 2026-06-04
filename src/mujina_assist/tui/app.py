@@ -1,22 +1,25 @@
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
+from uuid import uuid4
 
 from mujina_assist.models import AppPaths, RuntimeState
 from mujina_assist.services.checks import build_doctor_report
-from mujina_assist.services.checks import current_policy_label, write_config_file
+from mujina_assist.services.checks import current_policy_label, workspace_signature, write_config_file
 from mujina_assist.services.jobs import (
     active_jobs,
     create_job,
     job_is_stale,
     list_jobs,
     mark_job_finished,
+    mark_job_stopped,
     recent_jobs,
     stale_jobs,
     update_job,
 )
-from mujina_assist.services.state import load_runtime_state
-from mujina_assist.services.terminals import launch_job
+from mujina_assist.services.state import load_runtime_state, save_runtime_state
+from mujina_assist.services.terminals import launch_job, stop_job_launch
 from mujina_assist.tui.screens import SCREEN_CLASSES, TEXTUAL_IMPORT_ERROR
 from mujina_assist.tui.screens import _safety_state, _status_from_reasons
 
@@ -112,6 +115,7 @@ if TEXTUAL_IMPORT_ERROR is None:
             ("q", "request_quit", "終了"),
             ("d", "open_screen('dashboard')", "Doctor"),
             ("s", "open_screen('setup')", "Setup"),
+            ("y", "open_screen('simulation')", "SIM"),
             ("p", "open_screen('policy')", "Policy"),
             ("m", "open_screen('motor')", "Motor"),
             ("z", "open_screen('zero')", "Zero"),
@@ -139,6 +143,9 @@ if TEXTUAL_IMPORT_ERROR is None:
             self.state = load_runtime_state(self.paths.runtime_state_file)
             if not self.state.active_policy_label:
                 self.state.active_policy_label = current_policy_label(self.paths, self.state)
+
+        def save_runtime_state(self) -> None:
+            save_runtime_state(self.paths.runtime_state_file, self.state)
 
         def action_open_screen(self, name: str) -> None:
             route = {
@@ -181,6 +188,106 @@ if TEXTUAL_IMPORT_ERROR is None:
                 return
             update_job(job, terminal_mode=launch.mode, terminal_label=launch.label, terminal_pid=launch.pid)
             self.notify(f"{name} を起動しました。ログ: {Path(job.log_path).name}", severity="information", timeout=8)
+            self.refresh_runtime_state()
+
+        def launch_sim_from_tui(self) -> None:
+            report = build_doctor_report(self.paths, self.state)
+            if not report.workspace_cloned:
+                self.notify("workspace が未作成です。Setup画面で u を押して初回セットアップを開始してください。", severity="warning", timeout=10)
+                return
+            if not report.workspace_built:
+                self.notify("workspace が未ビルドです。Setup画面で b を押すか、初回セットアップを完了してください。", severity="warning", timeout=10)
+                return
+            if not report.active_policy_hash:
+                self.notify("policy hash を取得できません。Setup/Build後に再実行してください。", severity="warning", timeout=10)
+                return
+
+            conflicts = [
+                job
+                for job in list_jobs(self.paths)
+                if job.kind in {"sim_main", "sim_joy"} and job.status in {"queued", "running"} and not job_is_stale(job)
+            ]
+            if conflicts:
+                self.notify(
+                    f"{conflicts[0].name} が {conflicts[0].status} です。Logsで状態を確認してください。",
+                    severity="warning",
+                    timeout=8,
+                )
+                return
+
+            current_signature = workspace_signature(self.paths)
+            self.state.active_policy_hash = report.active_policy_hash
+            self.state.active_policy_label = report.active_policy_label
+            self.state.active_policy_source = report.active_policy_source
+            self.state.workspace_signature = current_signature
+            self.state.last_action = "sim_launch"
+            self.state.last_sim_success = False
+            self.state.last_sim_policy_hash = ""
+            self.save_runtime_state()
+
+            group_id = f"sim-{uuid4().hex[:8]}"
+            payload = {
+                "policy_hash": report.active_policy_hash,
+                "policy_label": report.active_policy_label,
+                "workspace_signature": current_signature,
+            }
+            jobs = [
+                create_job(self.paths, kind="sim_main", name="SIM 本体", payload=dict(payload), group_id=group_id),
+                create_job(self.paths, kind="sim_joy", name="SIM joy ノード", payload=dict(payload), group_id=group_id),
+            ]
+            launches = []
+            for job in jobs:
+                launch = launch_job(self.paths, job)
+                if not launch.ok:
+                    mark_job_finished(job, returncode=1, message=launch.message)
+                    for launched_job, mode, label, pid in launches:
+                        stop_error = stop_job_launch(mode=mode, label=label, pid=pid)
+                        if stop_error:
+                            update_job(launched_job, message=f"SIMペア起動失敗。停止確認できませんでした: {stop_error}")
+                        else:
+                            mark_job_stopped(launched_job, message="SIMペア起動失敗のため停止しました。")
+                    self.notify(f"SIMを起動できません: {launch.message}", severity="error", timeout=10)
+                    return
+                update_job(job, terminal_mode=launch.mode, terminal_label=launch.label, terminal_pid=launch.pid)
+                launches.append((job, launch.mode, launch.label, launch.pid))
+
+            self.notify("SIM 本体と joy ノードを起動しました。MuJoCo画面と入力応答を確認してください。", severity="information", timeout=10)
+            self.refresh_runtime_state()
+
+        def mark_sim_verified_from_tui(self) -> None:
+            report = build_doctor_report(self.paths, self.state)
+            if not report.workspace_built:
+                self.notify("workspace が未ビルドです。先にSetup/Buildを完了してください。", severity="warning", timeout=10)
+                return
+            current_signature = workspace_signature(self.paths)
+            groups: dict[str, set[str]] = {}
+            for job in active_jobs(self.paths):
+                if job.kind not in {"sim_main", "sim_joy"}:
+                    continue
+                if str(job.payload.get("policy_hash", "")) != report.active_policy_hash:
+                    continue
+                if str(job.payload.get("workspace_signature", "")) != current_signature:
+                    continue
+                if not job.group_id or not job.started_at:
+                    continue
+                groups.setdefault(job.group_id, set()).add(job.kind)
+            if not any(kinds == {"sim_main", "sim_joy"} for kinds in groups.values()):
+                self.notify("同じpolicy/workspaceで実行中のSIMペアを確認できません。先に o でSIMを起動してください。", severity="warning", timeout=10)
+                return
+
+            self.state.active_policy_hash = report.active_policy_hash
+            self.state.active_policy_label = report.active_policy_label
+            self.state.active_policy_source = report.active_policy_source
+            self.state.workspace_signature = current_signature
+            self.state.last_action = "sim_verified"
+            self.state.last_sim_success = True
+            self.state.last_sim_policy_hash = report.active_policy_hash
+            self.state.last_sim_verified_at = datetime.now().astimezone().isoformat(timespec="seconds")
+            self.state.last_sim_verified_label = report.active_policy_label
+            self.state.last_sim_verified_source = report.active_policy_source
+            self.state.last_sim_verified_workspace_signature = current_signature
+            self.save_runtime_state()
+            self.notify("現在のpolicy/workspaceをSIM確認済みとして記録しました。", severity="information", timeout=10)
             self.refresh_runtime_state()
 
         def show_cli_required(self, command: str, reason: str) -> None:

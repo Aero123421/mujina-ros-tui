@@ -164,6 +164,7 @@ if TEXTUAL_IMPORT_ERROR is None:
             ("q", "app.request_quit", "終了"),
             ("d", "app.open_screen('dashboard')", "Doctor"),
             ("s", "app.open_screen('setup')", "Setup"),
+            ("y", "app.open_screen('simulation')", "SIM"),
             ("p", "app.open_screen('policy')", "Policy"),
             ("m", "app.open_screen('motor')", "Motor"),
             ("z", "app.open_screen('zero')", "Zero"),
@@ -609,23 +610,56 @@ if TEXTUAL_IMPORT_ERROR is None:
 
     class SimulationScreen(SkeletonScreen):
         BINDINGS = MujinaBaseScreen.BINDINGS + [
-            ("x", "sim_cli", "SIM CLI"),
-            ("v", "sim_verified_cli", "Verified CLI"),
+            ("o", "start_sim", "SIM起動"),
+            ("v", "mark_verified", "確認済み"),
+            ("f5", "refresh", "更新"),
         ]
         SCREEN_TITLE = "Simulation"
         SCREEN_SUMMARY = "policy変更後の実機前確認"
-        ITEMS = [
-            ("SIM main", "wait", "mujina_main --sim"),
-            ("joy node", "wait", "input応答確認"),
-            ("topic watcher", "wait", "/robot_mode /motor_state /joint_states"),
-            ("SIM verified", "lock", "live session確認後に付与"),
-        ]
 
-        def action_sim_cli(self) -> None:
-            self.app.show_cli_required("./start.sh sim", "SIMはmain/joyのペア起動と別ターミナル確認が必要です")
+        def on_mount(self) -> None:
+            self._refresh()
+            self.set_interval(2.0, self._refresh)
 
-        def action_sim_verified_cli(self) -> None:
-            self.app.show_cli_required("./start.sh sim-verified", "SIM確認済み付与はlive session確認後にCLIで実行します")
+        def _refresh(self) -> None:
+            report = self.doctor_report()
+            jobs = active_jobs(self.paths)
+            running_kinds = {job.kind for job in jobs}
+            table = self.query_one("#skeleton-table", DataTable)
+            table.clear(columns=True)
+            table.add_columns("Item", "Status", "Summary")
+            rows = [
+                ("workspace", "ok" if report.workspace_cloned else "warn", "ready" if report.workspace_cloned else "Setupで初回セットアップ"),
+                ("build", "ok" if report.workspace_built else "warn", "complete" if report.workspace_built else "Setupでbuild"),
+                ("policy", "ok" if report.active_policy_hash else "warn", report.active_policy_label),
+                ("SIM main", "ok" if "sim_main" in running_kinds else "wait", "mujina_main --sim"),
+                ("joy node", "ok" if "sim_joy" in running_kinds else "wait", "joy_linux_node"),
+                ("SIM verified", "ok" if report.sim_ready else "lock", report.sim_verified_at or "未確認"),
+            ]
+            _add_rows(table, rows)
+            self.query_one("#skeleton-note", Static).update(
+                "\n".join(
+                    [
+                        "[b]Actions[/b]",
+                        "o: SIM 本体と joy ノードをペアで起動します。",
+                        "v: MuJoCoの姿勢とgamepad入力を確認した後、現在のpolicy/workspaceをSIM確認済みにします。",
+                        "F5: 状態を更新します。",
+                        "",
+                        "[dim]CLIで同じ操作をする場合は `./start.sh sim` / `./start.sh sim-verified` です。[/dim]",
+                    ]
+                )
+            )
+
+        def action_refresh(self) -> None:
+            self._refresh()
+
+        def action_start_sim(self) -> None:
+            self.app.launch_sim_from_tui()
+            self._refresh()
+
+        def action_mark_verified(self) -> None:
+            self.app.mark_sim_verified_from_tui()
+            self._refresh()
 
 
     class RealPreflightScreen(SkeletonScreen):
@@ -720,6 +754,7 @@ if TEXTUAL_IMPORT_ERROR is None:
                             "Enter: Dashboard の選択中 flow 項目を開く",
                             "d: Dashboard / Doctor",
                             "s: Setup",
+                            "y: Simulation",
                             "p: Policy",
                             "m: Motor",
                             "z: Zero Wizard",
