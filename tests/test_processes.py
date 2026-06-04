@@ -27,7 +27,19 @@ class ProcessScriptTest(unittest.TestCase):
             self.assertIn("zero-gain one-shot query", script)
             self.assertIn("'event': 'motor_probe'", script)
             self.assertIn("ids = [1, 2]", script)
+            self.assertIn("use_mujina_transforms = False", script)
             self.assertNotIn("while True", script)
+
+    def test_build_motor_probe_script_can_use_mujina_transforms_for_real_launch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = AppPaths.from_repo_root(Path(tmp))
+            script = build_motor_probe_script(paths, [10, 11, 12], "net", use_mujina_transforms=True)
+
+            self.assertIn("use_mujina_transforms = True", script)
+            self.assertIn("direction_by_id = {10: 1, 11: -1, 12: -1}", script)
+            self.assertIn("gear_by_id = {10: 1, 11: 1, 12: 2}", script)
+            self.assertIn("offset_by_id", script)
+            self.assertIn("set_angle_offset", script)
 
     def test_build_motor_read_script_passes_device_explicitly(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

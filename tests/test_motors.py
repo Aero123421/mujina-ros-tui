@@ -7,9 +7,12 @@ from pathlib import Path
 
 from mujina_assist.models import DEFAULT_MOTOR_IDS
 from mujina_assist.services.motors import (
+    OFFSET_ANGLE,
     JOINT_ORDER,
     MotorScanEntry,
+    STANDBY_ANGLE,
     build_scan_result,
+    closest_safe_pose_error,
     default_motor_descriptors,
     load_scan_result,
     parse_probe_output,
@@ -26,6 +29,9 @@ class MotorsServiceTest(unittest.TestCase):
         self.assertEqual([descriptor.motor_id for descriptor in descriptors], DEFAULT_MOTOR_IDS)
         self.assertEqual([descriptor.joint_name for descriptor in descriptors], JOINT_ORDER)
         self.assertEqual(descriptors[0].leg, "RL")
+        self.assertEqual(descriptors[1].direction, -1)
+        self.assertEqual(descriptors[2].gear_ratio, 2)
+        self.assertEqual(descriptors[0].angle_offset, OFFSET_ANGLE[0])
         self.assertEqual(descriptors[-1].joint_name, "FR_knee_joint")
 
     def test_scan_result_summary_and_json_round_trip(self) -> None:
@@ -62,8 +68,18 @@ motor 11: pos=0.002 vel=0.001 cur=0.200 temp=31.9
 
     def test_validate_scan_for_real_launch_requires_all_axes_stationary(self) -> None:
         entries = [
-            MotorScanEntry(joint, motor_id, responded=True, position_rad=0.0, velocity_rad_s=0.0, temperature_c=31.0, error_code="0x00", status="ok")
-            for joint, motor_id in zip(JOINT_ORDER, DEFAULT_MOTOR_IDS)
+            MotorScanEntry(
+                joint,
+                motor_id,
+                responded=True,
+                position_rad=position,
+                velocity_rad_s=0.0,
+                current_a=0.0,
+                temperature_c=31.0,
+                error_code="0x00",
+                status="ok",
+            )
+            for joint, motor_id, position in zip(JOINT_ORDER, DEFAULT_MOTOR_IDS, STANDBY_ANGLE)
         ]
         result = build_scan_result(entries)
 
@@ -73,6 +89,49 @@ motor 11: pos=0.002 vel=0.001 cur=0.200 temp=31.9
         result = build_scan_result(entries)
 
         self.assertTrue(validate_scan_for_real_launch(result))
+
+    def test_validate_scan_for_real_launch_accepts_origin_offset_pose(self) -> None:
+        entries = [
+            MotorScanEntry(
+                joint,
+                motor_id,
+                responded=True,
+                position_rad=position,
+                velocity_rad_s=0.0,
+                current_a=0.0,
+                temperature_c=31.0,
+                error_code="0x00",
+                status="ok",
+            )
+            for joint, motor_id, position in zip(JOINT_ORDER, DEFAULT_MOTOR_IDS, OFFSET_ANGLE)
+        ]
+        result = build_scan_result(entries)
+
+        self.assertEqual(closest_safe_pose_error(result), ("origin_offset", 0.0))
+        self.assertEqual(validate_scan_for_real_launch(result), [])
+
+    def test_validate_scan_for_real_launch_blocks_unknown_pose_and_high_current(self) -> None:
+        entries = [
+            MotorScanEntry(
+                joint,
+                motor_id,
+                responded=True,
+                position_rad=3.0,
+                velocity_rad_s=0.0,
+                current_a=0.0,
+                temperature_c=31.0,
+                error_code="0x00",
+                status="ok",
+            )
+            for joint, motor_id in zip(JOINT_ORDER, DEFAULT_MOTOR_IDS)
+        ]
+        entries[0].current_a = 11.0
+        result = build_scan_result(entries)
+
+        errors = validate_scan_for_real_launch(result)
+
+        self.assertTrue(any("現在姿勢" in error for error in errors))
+        self.assertTrue(any("current" in error for error in errors))
 
     def test_validate_scan_for_zero_checks_only_target_axes_with_tighter_velocity(self) -> None:
         entries = [

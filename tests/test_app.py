@@ -7,8 +7,9 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from mujina_assist.app import MujinaAssistApp
-from mujina_assist.models import DoctorReport, PolicyCandidate
+from mujina_assist.models import DEFAULT_MOTOR_IDS, DoctorReport, PolicyCandidate
 from mujina_assist.services.jobs import create_job, list_jobs, update_job
+from mujina_assist.services.motors import STANDBY_ANGLE
 from mujina_assist.services.zero import new_zero_profile, save_zero_profile
 
 
@@ -254,6 +255,31 @@ class AppTest(unittest.TestCase):
 
             self.assertEqual(result, 0)
             self.assertEqual([call.args[0] for call in wait_mock.call_args_list], ["/imu/data", "/robot_mode", "/joy"])
+
+    def test_real_motor_preflight_scan_uses_mujina_frame_and_safe_pose_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            app = MujinaAssistApp(Path(tmp))
+            self._prepare_built_workspace(app)
+
+            def run_bash_side_effect(*args, **kwargs):
+                lines = [
+                    (
+                        '{"event": "motor_probe", "motor_id": %d, "position_rad": %.4f, '
+                        '"velocity_rad_s": 0.0, "current_a": 0.0, "temperature_c": 31.0, '
+                        '"error_code": "0x00", "status": "ok"}'
+                    )
+                    % (motor_id, position)
+                    for motor_id, position in zip(DEFAULT_MOTOR_IDS, STANDBY_ANGLE)
+                ]
+                kwargs["log_path"].write_text("\n".join(lines) + "\nMotor probe completed.\n", encoding="utf-8")
+                return SimpleNamespace(returncode=0, stdout="")
+
+            with patch("mujina_assist.app.run_bash", side_effect=run_bash_side_effect) as run_bash_mock:
+                result = app._run_real_motor_preflight_scan("net")
+
+            self.assertTrue(result)
+            self.assertIn("use_mujina_transforms = True", run_bash_mock.call_args.args[0])
+            self.assertIn("real-preflight-motor", str(run_bash_mock.call_args.kwargs["log_path"]))
 
     def test_execute_zero_job_stops_when_probe_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -513,6 +539,9 @@ class AppTest(unittest.TestCase):
             ), patch(
                 "mujina_assist.app.inspect_can_status",
                 return_value={"present": True, "ok": False, "operstate": "down", "controller_state": "bus-off"},
+            ), patch(
+                "mujina_assist.app.run_bash",
+                return_value=SimpleNamespace(returncode=0),
             ), patch.object(
                 app,
                 "_active_policy_real_world_ready",

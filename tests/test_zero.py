@@ -85,6 +85,36 @@ class ZeroProfileTest(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertGreaterEqual(len(result.errors), 3)
 
+    def test_validate_zero_profile_warns_when_workspace_identity_is_missing_or_stale(self) -> None:
+        missing_identity = new_zero_profile(
+            result="verified",
+            operator_confirmed=True,
+            post_zero_max_abs_position_rad=0.01,
+        )
+        stale_identity = new_zero_profile(
+            upstream_commit="old",
+            patch_set_hash="old-patches",
+            result="verified",
+            operator_confirmed=True,
+            post_zero_max_abs_position_rad=0.01,
+        )
+
+        missing = validate_zero_profile(
+            missing_identity,
+            expected_upstream_commit="current",
+            expected_patch_set_hash="current-patches",
+        )
+        stale = validate_zero_profile(
+            stale_identity,
+            expected_upstream_commit="current",
+            expected_patch_set_hash="current-patches",
+        )
+
+        self.assertTrue(missing.ok)
+        self.assertEqual(len(missing.warnings), 2)
+        self.assertTrue(stale.ok)
+        self.assertEqual(len(stale.warnings), 2)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -91,7 +91,15 @@ def _environment_short(report: "DoctorReport") -> str:
 
 def _safety_state(paths: "AppPaths", state: "RuntimeState", report: "DoctorReport") -> SafetyState:
     manifest = _active_policy_manifest_validation(report)
-    zero_profile = validate_zero_profile(paths.active_zero_profile_file) if paths.active_zero_profile_file.exists() else None
+    zero_profile = (
+        validate_zero_profile(
+            paths.active_zero_profile_file,
+            expected_upstream_commit=state.workspace_upstream_commit,
+            expected_patch_set_hash=state.workspace_patch_set_hash,
+        )
+        if paths.active_zero_profile_file.exists()
+        else None
+    )
     return evaluate_real_preflight(
         report,
         state,

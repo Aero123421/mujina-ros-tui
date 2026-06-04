@@ -174,6 +174,14 @@ mujina-ros-tui/
 
 現在の patch queue には CAN setup、IMU driver、motor response handling、`mujina_main` safety guard の補正を置いています。`third_party/mujina_ros` は直接編集せず、`workspace/src/mujina_ros` 作成時に適用します。
 
+## 実機安全上の重要な前提
+
+本家 `mujina_ros` の `motor_set_zero_position.py` は、自動で原点探索や初期位置復帰を行うスクリプトではありません。人間が README の原点姿勢へ物理的に置いたあと、「今の姿勢を motor zero として書く」ための手順です。間違った姿勢で zero を実行すると、その間違った姿勢が原点として記録されます。
+
+実機 `mujina_main` は起動直後に `can0` の 12 軸を作成し、offset を入れ、motor enable 後に現在角から `STANDBY_ANGLE` へ補間します。そのため zero、motor ID、向き、offset、CAN 状態、起動姿勢がずれていると、`/robot_mode` が見える前後で大きな意図しない動きにつながります。TUI は real launch 前の motor scan を本家 main と同じ direction / gear / offset 座標で読み、原点姿勢または STANDBY 姿勢に近い場合だけ進めます。
+
+ROS の emergency stop は高D damping 停止であり、物理電源遮断ではありません。実機起動時は必ず独立した物理停止手段を用意してください。
+
 ## workspace mode
 
 | Mode | 内容 |

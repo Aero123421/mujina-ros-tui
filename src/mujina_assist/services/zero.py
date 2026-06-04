@@ -190,10 +190,16 @@ def validate_zero_profile(
         errors.append("joint_order が Mujina の既定順序と一致しません。")
     if profile.post_zero_max_abs_position_rad > max_abs_position_rad:
         errors.append(f"post-zero 位置誤差が大きすぎます: {profile.post_zero_max_abs_position_rad:.3f} rad")
-    if expected_upstream_commit and profile.upstream_commit and profile.upstream_commit != expected_upstream_commit:
-        warnings.append("zero profile 作成時の upstream commit と現在の commit が異なります。")
-    if expected_patch_set_hash and profile.patch_set_hash and profile.patch_set_hash != expected_patch_set_hash:
-        warnings.append("zero profile 作成時の patch set と現在の patch set が異なります。")
+    if expected_upstream_commit:
+        if not profile.upstream_commit:
+            warnings.append("zero profile 作成時の upstream commit が記録されていません。")
+        elif profile.upstream_commit != expected_upstream_commit:
+            warnings.append("zero profile 作成時の upstream commit と現在の commit が異なります。")
+    if expected_patch_set_hash:
+        if not profile.patch_set_hash:
+            warnings.append("zero profile 作成時の patch set が記録されていません。")
+        elif profile.patch_set_hash != expected_patch_set_hash:
+            warnings.append("zero profile 作成時の patch set と現在の patch set が異なります。")
     return ZeroProfileValidation(ok=not errors, errors=errors, warnings=warnings, profile=profile)
 
 

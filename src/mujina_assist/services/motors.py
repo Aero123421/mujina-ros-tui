@@ -26,6 +26,42 @@ JOINT_ORDER = [
     "FR_knee_joint",
 ]
 
+MOTOR_DIRECTIONS = [1, -1, -1, 1, 1, 1, -1, -1, -1, -1, 1, 1]
+EXTERNAL_GEAR_RATIOS = [1, 1, 2, 1, 1, 2, 1, 1, 2, 1, 1, 2]
+OFFSET_ANGLE = [
+    -0.78539565,
+    3.14159265,
+    0.32794737,
+    -5.49778965,
+    -3.14159265,
+    -2.81364528,
+    5.49778965,
+    3.14159265,
+    0.32794737,
+    0.78539565,
+    -3.14159265,
+    -2.81364528,
+]
+STANDBY_ANGLE = [
+    0.2222,
+    1.2710,
+    -2.6,
+    -0.2222,
+    1.2710,
+    -2.6,
+    0.2398,
+    1.3063,
+    -2.6,
+    -0.2398,
+    1.3063,
+    -2.6,
+]
+
+SAFE_REAL_LAUNCH_POSES = {
+    "origin_offset": OFFSET_ANGLE,
+    "standby": STANDBY_ANGLE,
+}
+
 
 @dataclass(slots=True)
 class MotorDescriptor:
@@ -35,6 +71,7 @@ class MotorDescriptor:
     role: str
     direction: int = 1
     gear_ratio: float = 1.0
+    angle_offset: float = 0.0
 
 
 @dataclass(slots=True)
@@ -71,8 +108,24 @@ def default_motor_descriptors() -> list[MotorDescriptor]:
     roles = ["collar", "hip", "knee"] * 4
     legs = ["RL"] * 3 + ["RR"] * 3 + ["FL"] * 3 + ["FR"] * 3
     return [
-        MotorDescriptor(joint_name=joint, motor_id=motor_id, leg=leg, role=role)
-        for joint, motor_id, leg, role in zip(JOINT_ORDER, DEFAULT_MOTOR_IDS, legs, roles)
+        MotorDescriptor(
+            joint_name=joint,
+            motor_id=motor_id,
+            leg=leg,
+            role=role,
+            direction=direction,
+            gear_ratio=gear_ratio,
+            angle_offset=angle_offset,
+        )
+        for joint, motor_id, leg, role, direction, gear_ratio, angle_offset in zip(
+            JOINT_ORDER,
+            DEFAULT_MOTOR_IDS,
+            legs,
+            roles,
+            MOTOR_DIRECTIONS,
+            EXTERNAL_GEAR_RATIOS,
+            OFFSET_ANGLE,
+        )
     ]
 
 
@@ -124,6 +177,8 @@ def validate_scan_for_real_launch(
     *,
     max_temperature_c: float = 70.0,
     max_abs_velocity_rad_s: float = 0.2,
+    max_abs_current_a: float = 10.0,
+    max_safe_pose_error_rad: float = 0.35,
 ) -> list[str]:
     errors: list[str] = []
     if result.motor_ids != DEFAULT_MOTOR_IDS:
@@ -140,11 +195,41 @@ def validate_scan_for_real_launch(
             continue
         if entry.temperature_c is not None and entry.temperature_c > max_temperature_c:
             errors.append(f"motor {entry.motor_id} temperature={entry.temperature_c:.1f}C が高すぎます。")
+        if entry.position_rad is None:
+            errors.append(f"motor {entry.motor_id} position が読めません。")
         if entry.velocity_rad_s is None:
             errors.append(f"motor {entry.motor_id} velocity が読めません。")
         elif abs(entry.velocity_rad_s) > max_abs_velocity_rad_s:
             errors.append(f"motor {entry.motor_id} velocity={entry.velocity_rad_s:.3f} rad/s が大きすぎます。")
+        if entry.current_a is None:
+            errors.append(f"motor {entry.motor_id} current が読めません。")
+        elif abs(entry.current_a) > max_abs_current_a:
+            errors.append(f"motor {entry.motor_id} current={entry.current_a:.3f} A が大きすぎます。")
+    pose_error = closest_safe_pose_error(result)
+    if pose_error is None:
+        errors.append("実機起動前姿勢を判定できません。")
+    else:
+        pose_name, max_error = pose_error
+        if max_error > max_safe_pose_error_rad:
+            errors.append(
+                f"現在姿勢が安全な開始姿勢から外れています。closest={pose_name}, max_error={max_error:.3f} rad"
+            )
     return errors
+
+
+def closest_safe_pose_error(result: MotorScanResult) -> tuple[str, float] | None:
+    positions = [entry.position_rad for entry in result.entries if entry.responded]
+    if len(positions) != len(DEFAULT_MOTOR_IDS) or any(position is None for position in positions):
+        return None
+    best: tuple[str, float] | None = None
+    numeric_positions = [float(position) for position in positions if position is not None]
+    for name, reference in SAFE_REAL_LAUNCH_POSES.items():
+        if len(reference) != len(numeric_positions):
+            continue
+        max_error = max(abs(position - expected) for position, expected in zip(numeric_positions, reference))
+        if best is None or max_error < best[1]:
+            best = (name, max_error)
+    return best
 
 
 def validate_scan_for_zero(

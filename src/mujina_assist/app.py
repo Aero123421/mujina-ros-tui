@@ -600,8 +600,6 @@ class MujinaAssistApp:
                 include_joy=True,
             )
             return 1
-        if not self._ensure_can_mode_ready(selected_can_mode):
-            return 1
         imu_port = self._resolve_runtime_imu_port()
         if imu_port is None:
             error("IMU ポートを確定できませんでした。")
@@ -621,6 +619,8 @@ class MujinaAssistApp:
         if not report.sim_ready:
             error("現在の workspace + policy では SIM確認済みの記録がありません。")
             bullet("先に `SIM` を起動し、同じ条件で姿勢と入力応答を確認してから `SIM確認済み` を付けてください。")
+            return 1
+        if not self._prepare_real_can_link(selected_can_mode):
             return 1
         if not self._run_real_motor_preflight_scan(selected_can_mode):
             return 1
@@ -646,6 +646,12 @@ class MujinaAssistApp:
             error("実機起動はまだロックされています。")
             for reason in hard_blocks:
                 bullet(reason.message)
+            return 1
+        if safety.standup_locked:
+            error("実機起動後に STANDUP へ進む条件がまだ不足しています。")
+            for reason in safety.reasons:
+                if reason.priority in {"P0", "P1"}:
+                    bullet(reason.message)
             return 1
         group_id = f"real-{uuid4().hex[:8]}"
         jobs = [
@@ -681,7 +687,13 @@ class MujinaAssistApp:
         section("Motor live check")
         log_path = self.paths.logs_dir / f"real-preflight-motor-{datetime.now().strftime('%Y%m%d-%H%M%S')}.log"
         result = run_bash(
-            build_motor_probe_script(self.paths, DEFAULT_MOTOR_IDS, can_mode, include_can_setup=False),
+            build_motor_probe_script(
+                self.paths,
+                DEFAULT_MOTOR_IDS,
+                can_mode,
+                include_can_setup=False,
+                use_mujina_transforms=True,
+            ),
             cwd=self.paths.workspace_dir,
             log_path=log_path,
             interactive=False,
@@ -694,7 +706,7 @@ class MujinaAssistApp:
         scan_result = build_scan_result(
             parse_probe_output(output),
             can_interface="can0",
-            scan_kind="zero_gain_one_shot_query",
+            scan_kind="real_launch_mujina_frame_zero_gain_query",
         )
         scan_path = log_path.with_suffix(".json")
         save_scan_result(scan_path, scan_result)
@@ -707,6 +719,26 @@ class MujinaAssistApp:
             return False
         success("実機起動前の motor live check が通りました。")
         bullet(f"scan: {scan_path}")
+        return True
+
+    def _prepare_real_can_link(self, can_mode: str) -> bool:
+        section("CAN reset / setup")
+        log_path = self.paths.logs_dir / f"real-preflight-can-setup-{datetime.now().strftime('%Y%m%d-%H%M%S')}.log"
+        setup_result = run_bash(
+            build_can_setup_script(self.paths, can_mode),
+            cwd=self.paths.workspace_dir,
+            log_path=log_path,
+            interactive=False,
+        )
+        if setup_result.returncode != 0:
+            error("実機起動前の CAN setup に失敗しました。")
+            bullet(f"ログ: {log_path}")
+            return False
+        if not self._ensure_can_mode_ready(can_mode):
+            bullet(f"CAN setup log: {log_path}")
+            return False
+        success("CAN setup と health check が通りました。")
+        bullet(f"ログ: {log_path}")
         return True
 
     def _launch_real_job_group(self, jobs: list[JobRecord]) -> int:
@@ -1722,12 +1754,13 @@ class MujinaAssistApp:
 
     def _confirm_real_robot_safety_checklist(self) -> bool:
         section("実機起動前チェック")
-        bullet("所定姿勢に置き、周囲 50cm 以上の離隔を確保してください。")
-        bullet("補助者が横につき、独立した停止手段をすぐ使える状態にしてください。")
+        bullet("原点姿勢または STANDBY 姿勢に置き、周囲 50cm 以上の離隔を確保してください。")
+        bullet("補助者が横につき、物理電源/独立停止手段をすぐ使える状態にしてください。")
+        bullet("ROS の emergency stop は高D damping停止で、物理電源遮断ではありません。")
         bullet("gamepad は Logicool F710 / F310 の X mode、MODE LED OFF を前提にしてください。")
         bullet("選ぶ policy の由来と学習条件を把握したうえで進めてください。")
         prompts = [
-            "周囲の離隔、補助者、停止手段を確認しましたか？",
+            "原点姿勢または STANDBY 姿勢、周囲の離隔、補助者、物理停止手段を確認しましたか？",
             "gamepad の X mode と MODE LED OFF を確認しましたか？",
             "今の policy の由来と学習条件を把握していますか？",
         ]
@@ -1736,6 +1769,7 @@ class MujinaAssistApp:
     def _confirm_zero_position_safety_checklist(self, ids: list[int]) -> bool:
         section("原点位置設定前チェック")
         bullet("README 記載の所定姿勢に置いてから実行してください。")
+        bullet("zero 成功は、物理姿勢が正しかった証明ではありません。間違った姿勢ならその姿勢が原点になります。")
         bullet("実際の書き込みは upstream の `motor_set_zero_position.py` をそのまま呼びます。")
         bullet("対象 ID: " + " ".join(str(value) for value in ids))
         prompts = [
@@ -1859,8 +1893,16 @@ class MujinaAssistApp:
         try:
             profile = load_active_zero_profile(self.paths)
         except Exception:
-            return validate_zero_profile(self.paths.active_zero_profile_file)
-        return validate_zero_profile(profile)
+            return validate_zero_profile(
+                self.paths.active_zero_profile_file,
+                expected_upstream_commit=self.state.workspace_upstream_commit,
+                expected_patch_set_hash=self.state.workspace_patch_set_hash,
+            )
+        return validate_zero_profile(
+            profile,
+            expected_upstream_commit=self.state.workspace_upstream_commit,
+            expected_patch_set_hash=self.state.workspace_patch_set_hash,
+        )
 
     def _ask_ids(self, *, default_to_all: bool = False) -> list[int]:
         prompt = "対象のモータ ID を空白またはカンマ区切りで入力してください。"

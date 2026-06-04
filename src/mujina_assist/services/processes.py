@@ -3,6 +3,7 @@ from __future__ import annotations
 import textwrap
 
 from mujina_assist.models import AppPaths
+from mujina_assist.services.motors import default_motor_descriptors
 from mujina_assist.services.shell import shell_quote
 from mujina_assist.services.workspace import ros_prefix
 
@@ -97,11 +98,16 @@ def build_motor_probe_script(
     *,
     device_name: str = "can0",
     include_can_setup: bool = True,
+    use_mujina_transforms: bool = False,
 ) -> str:
     commands: list[str] = []
     if include_can_setup:
         commands.append(_can_setup_command(can_mode))
     ids_literal = ", ".join(str(i) for i in ids)
+    descriptors = {descriptor.motor_id: descriptor for descriptor in default_motor_descriptors()}
+    direction_literal = ", ".join(f"{motor_id}: {descriptors[motor_id].direction}" for motor_id in ids if motor_id in descriptors)
+    gear_literal = ", ".join(f"{motor_id}: {descriptors[motor_id].gear_ratio!r}" for motor_id in ids if motor_id in descriptors)
+    offset_literal = ", ".join(f"{motor_id}: {descriptors[motor_id].angle_offset!r}" for motor_id in ids if motor_id in descriptors)
     probe_source = textwrap.dedent(
         f"""
         import json
@@ -110,15 +116,26 @@ def build_motor_probe_script(
 
         device = {device_name!r}
         ids = [{ids_literal}]
+        use_mujina_transforms = {use_mujina_transforms!r}
+        direction_by_id = {{{direction_literal}}}
+        gear_by_id = {{{gear_literal}}}
+        offset_by_id = {{{offset_literal}}}
         print('# using Socket {{}} for can communication'.format(device))
         print('# motor ids: {{}}'.format(ids))
         print('# probe kind: zero-gain one-shot query')
+        print('# mujina transforms: {{}}'.format('on' if use_mujina_transforms else 'off'))
         assert ids, 'please input motor ids'
 
         for motor_id in ids:
             motor_controller = CanMotorController(
-                device, motor_id, 1, 'RobStride02', external_gear_ratio=1.0
+                device,
+                motor_id,
+                direction_by_id.get(motor_id, 1) if use_mujina_transforms else 1,
+                'RobStride02',
+                external_gear_ratio=gear_by_id.get(motor_id, 1.0) if use_mujina_transforms else 1.0,
             )
+            if use_mujina_transforms:
+                motor_controller.set_angle_offset(offset_by_id.get(motor_id, 0.0), deg=False)
             pos, vel, cur, tem = motor_controller.send_rad_command(0.0, 0.0, 0, 0, 0)
             print(json.dumps({{
                 'event': 'motor_probe',
