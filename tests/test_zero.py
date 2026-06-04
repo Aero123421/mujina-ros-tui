@@ -85,7 +85,7 @@ class ZeroProfileTest(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertGreaterEqual(len(result.errors), 3)
 
-    def test_validate_zero_profile_warns_when_workspace_identity_is_missing_or_stale(self) -> None:
+    def test_validate_zero_profile_rejects_when_workspace_identity_is_missing_or_stale(self) -> None:
         missing_identity = new_zero_profile(
             result="verified",
             operator_confirmed=True,
@@ -110,10 +110,41 @@ class ZeroProfileTest(unittest.TestCase):
             expected_patch_set_hash="current-patches",
         )
 
-        self.assertTrue(missing.ok)
-        self.assertEqual(len(missing.warnings), 2)
-        self.assertTrue(stale.ok)
-        self.assertEqual(len(stale.warnings), 2)
+        self.assertFalse(missing.ok)
+        self.assertEqual(len(missing.errors), 2)
+        self.assertFalse(stale.ok)
+        self.assertEqual(len(stale.errors), 2)
+
+    def test_validate_zero_profile_rejects_string_boolean_and_string_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "zero.json"
+            path.write_text(
+                """
+                {
+                  "schema_version": 1,
+                  "created_at": "2026-06-04T10:00:00+09:00",
+                  "upstream_commit": "abc",
+                  "patch_set_hash": "patches",
+                  "can_interface": "can0",
+                  "motor_ids": [10, 11, 12, 7, 8, 9, 4, 5, 6, 1, 2, 3],
+                  "joint_order": [
+                    "RL_collar_joint", "RL_hip_joint", "RL_knee_joint",
+                    "RR_collar_joint", "RR_hip_joint", "RR_knee_joint",
+                    "FL_collar_joint", "FL_hip_joint", "FL_knee_joint",
+                    "FR_collar_joint", "FR_hip_joint", "FR_knee_joint"
+                  ],
+                  "result": "verified",
+                  "operator_confirmed": "false",
+                  "post_zero_max_abs_position_rad": "0.01"
+                }
+                """,
+                encoding="utf-8",
+            )
+
+            result = validate_zero_profile(path)
+
+            self.assertFalse(result.ok)
+            self.assertIn("読み込めません", " ".join(result.errors))
 
 
 if __name__ == "__main__":

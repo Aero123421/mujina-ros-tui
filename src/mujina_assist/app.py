@@ -9,6 +9,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from mujina_assist.models import DEFAULT_MOTOR_IDS, AppPaths, JobRecord, PolicyCandidate
+from mujina_assist.services.artifacts import create_release_zip, create_review_zip
 from mujina_assist.services.checks import (
     build_doctor_report,
     current_policy_label,
@@ -30,6 +31,7 @@ from mujina_assist.services.jobs import (
     create_job,
     job_is_stale,
     job_log_path,
+    live_jobs,
     list_jobs,
     load_job,
     mark_job_finished,
@@ -457,9 +459,21 @@ class MujinaAssistApp:
         if not self._require_built_workspace():
             return 1
         self._sync_default_policy_state()
+        self._current_workspace_signature()
+        self.save_state()
         report = build_doctor_report(self.paths, self.state)
         selected_can_mode = self._diagnostic_can_mode(can_mode)
         missing = self._missing_devices_for_can_mode(selected_can_mode, include_imu=True, include_joy=True)
+        safety = evaluate_real_preflight(
+            report,
+            self.state,
+            policy_manifest=self._active_policy_manifest_validation(),
+            zero_profile=self._active_zero_profile_validation(),
+            can_mode=selected_can_mode,
+            active_job_kinds={job.kind for job in live_jobs(self.paths)},
+            operator_checklist_complete=True,
+            real_confirmation="REAL",
+        )
 
         section("診断結果")
         bullet(f"現在の policy: {report.active_policy_label}")
@@ -487,6 +501,18 @@ class MujinaAssistApp:
             section("補足")
             for note in report.notes:
                 bullet(note)
+
+        section("Real launch locks")
+        if safety.reasons:
+            for reason in safety.reasons:
+                bullet(f"{reason.priority} {reason.code}: {reason.message}")
+        else:
+            success("P0/P1/P2 lock reason はありません。")
+
+        hard_blocks = p0_reasons(safety)
+        if hard_blocks:
+            error("P0 lock が残っています。実機起動はできません。")
+            return 1
         return 0
 
     def handle_setup(self, skip_upgrade: bool = False) -> int:
@@ -1000,6 +1026,28 @@ class MujinaAssistApp:
         for line in lines:
             line = line.rstrip("\n")
             print(line)
+        return 0
+
+    def handle_review_zip(self, output_path: str = "") -> int:
+        title("review zip")
+        target = Path(output_path) if output_path else None
+        try:
+            created = create_review_zip(self.paths.repo_root, target)
+        except Exception as exc:
+            error(f"review zip の作成に失敗しました: {exc}")
+            return 1
+        success(f"review zip を作成しました: {created}")
+        return 0
+
+    def handle_release_zip(self, output_path: str = "", ref: str = "HEAD") -> int:
+        title("release zip")
+        target = Path(output_path) if output_path else None
+        try:
+            created = create_release_zip(self.paths.repo_root, target, ref=ref)
+        except Exception as exc:
+            error(f"release zip の作成に失敗しました: {exc}")
+            return 1
+        success(f"release zip を作成しました: {created}")
         return 0
 
     def run_worker(self, job_file: Path) -> int:
@@ -1607,7 +1655,7 @@ class MujinaAssistApp:
             self.save_state()
 
     def _confirm_no_conflicting_jobs(self, relevant_kinds: set[str], *, allow_override: bool = True) -> bool:
-        conflicts = [job for job in active_jobs(self.paths) if job.kind in relevant_kinds]
+        conflicts = [job for job in live_jobs(self.paths) if job.kind in relevant_kinds]
         if conflicts:
             warn("同系統のジョブ記録が残っています。必要ならログで確認してください。")
             for job in conflicts:
@@ -1838,7 +1886,7 @@ class MujinaAssistApp:
 
     def _has_live_sim_session(self, policy_hash: str, workspace_signature_value: str) -> bool:
         groups: dict[str, set[str]] = {}
-        for job in active_jobs(self.paths):
+        for job in live_jobs(self.paths):
             if job.kind not in {"sim_main", "sim_joy"}:
                 continue
             if str(job.payload.get("policy_hash", "")) != policy_hash:
@@ -2066,6 +2114,13 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("logs")
     subparsers.add_parser("motor-diagnostics")
 
+    review_zip_parser = subparsers.add_parser("review-zip")
+    review_zip_parser.add_argument("--output", default="")
+
+    release_zip_parser = subparsers.add_parser("release-zip")
+    release_zip_parser.add_argument("--output", default="")
+    release_zip_parser.add_argument("--ref", default="HEAD")
+
     robot_parser = subparsers.add_parser("robot")
     robot_parser.add_argument("--can-mode", choices=["auto", "net", "serial"], default="auto")
 
@@ -2123,6 +2178,10 @@ def run_app(repo_root: Path, argv: list[str] | None = None) -> int:
         return app.handle_mark_sim_verified()
     if command == "logs":
         return app.handle_logs()
+    if command == "review-zip":
+        return app.handle_review_zip(output_path=args.output)
+    if command == "release-zip":
+        return app.handle_release_zip(output_path=args.output, ref=args.ref)
     if command == "motor-diagnostics":
         return app.handle_motor_diagnostics()
     if command == "robot":

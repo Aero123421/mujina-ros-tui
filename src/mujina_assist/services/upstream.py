@@ -20,6 +20,25 @@ ASSISTED_MODE = "assisted"
 DIAGNOSTIC_MODE = "diagnostic"
 WORKSPACE_IGNORED_NAMES = {".git", ".mujina-upstream.json"}
 REQUIRED_ASSISTED_PATCHES = {
+    "0001": (
+        (
+            Path("mujina_control/scripts/can_setup_net.sh"),
+            (
+                "sudo ip link set can0 down || true",
+                "sudo ip link set can0 type can bitrate 1000000 restart-ms 100",
+            ),
+            ("sudo ip link set can0 type can bitrate 1000000\n",),
+        ),
+        (
+            Path("mujina_control/scripts/can_setup_serial.sh"),
+            (
+                "sudo ip link set can0 down || true",
+                "sudo ip link delete can0 || true",
+                "sudo slcand -o -c -s8 /dev/usb_can can0",
+            ),
+            (),
+        ),
+    ),
     "0002": (
         (
             Path("rt_usb_imu_driver/src/parser.cpp"),
@@ -314,8 +333,9 @@ def prepare_workspace(
         shutil.copytree(paths.vendored_upstream_dir, tmp_dir, ignore=shutil.ignore_patterns(".git"))
         if mode == ASSISTED_MODE:
             applied_patches = apply_patch_queue(tmp_dir, paths.upstream_patches_dir)
-            if applied_patches:
-                verify_assisted_patchset(tmp_dir)
+            if not applied_patches:
+                raise RuntimeError("assisted mode requires a non-empty patch queue")
+            verify_assisted_patchset(tmp_dir)
         upstream_commit = detect_upstream_commit(paths.vendored_upstream_dir)
         patches_hash = patch_set_hash(paths) if mode == ASSISTED_MODE else ""
         workspace_tree_hash = _tree_hash(tmp_dir, ignored_names=WORKSPACE_IGNORED_NAMES)
@@ -379,8 +399,6 @@ def apply_upstream_patches(paths: AppPaths) -> list[Path]:
 
 def _prepare_workspace_stdout(vendored_dir: Path, mode: str, applied_patches: list[Path]) -> str:
     lines = [f"prepared workspace from {vendored_dir}"]
-    if mode == ASSISTED_MODE and not applied_patches:
-        lines.append("warning: assisted mode selected but patch queue is empty")
     return "\n".join(lines)
 
 

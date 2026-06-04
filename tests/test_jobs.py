@@ -4,12 +4,14 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from mujina_assist.models import AppPaths, JobRecord
 from mujina_assist.services.jobs import (
     active_jobs,
     acquire_job_claim,
     create_job,
+    live_jobs,
     stale_running_jobs,
     list_jobs,
     load_job,
@@ -209,7 +211,7 @@ class JobsTest(unittest.TestCase):
             running = create_job(paths, kind="real_main", name="real main")
             update_job(running, status="running", terminal_mode="terminal", terminal_pid=999999)
 
-            with unittest.mock.patch("mujina_assist.services.jobs._pid_alive", return_value=False):
+            with patch("mujina_assist.services.jobs._pid_alive", return_value=False):
                 jobs = stale_running_jobs(paths)
 
             self.assertEqual([job.job_id for job in jobs], [running.job_id])
@@ -221,7 +223,7 @@ class JobsTest(unittest.TestCase):
             queued = create_job(paths, kind="setup", name="initial setup")
             update_job(queued, terminal_mode="terminal", terminal_pid=999999)
 
-            with unittest.mock.patch("mujina_assist.services.jobs._pid_alive", return_value=False):
+            with patch("mujina_assist.services.jobs._pid_alive", return_value=False):
                 jobs = stale_queued_jobs(paths)
 
             self.assertEqual([job.job_id for job in jobs], [queued.job_id])
@@ -236,12 +238,12 @@ class JobsTest(unittest.TestCase):
             running = create_job(paths, kind="real_main", name="real main")
             update_job(running, status="running", terminal_mode="terminal", terminal_pid=222222)
 
-            with unittest.mock.patch("mujina_assist.services.jobs._pid_alive", return_value=False):
+            with patch("mujina_assist.services.jobs._pid_alive", return_value=False):
                 jobs = stale_jobs(paths)
 
             self.assertEqual({job.job_id for job in jobs}, {queued.job_id, running.job_id})
 
-    def test_old_queued_job_without_launch_metadata_is_not_stale(self) -> None:
+    def test_old_queued_job_without_launch_metadata_is_stale(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             paths = AppPaths.from_repo_root(Path(tmp))
             paths.ensure_directories()
@@ -249,7 +251,23 @@ class JobsTest(unittest.TestCase):
             queued.created_at = "2000-01-01T00:00:00+09:00"
             save_job(queued)
 
-            self.assertEqual(stale_queued_jobs(paths), [])
+            self.assertEqual([job.job_id for job in stale_queued_jobs(paths)], [queued.job_id])
+
+    def test_live_jobs_excludes_stale_queued_and_running_jobs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = AppPaths.from_repo_root(Path(tmp))
+            paths.ensure_directories()
+            queued = create_job(paths, kind="setup", name="old queued")
+            queued.created_at = "2000-01-01T00:00:00+09:00"
+            save_job(queued)
+            running = create_job(paths, kind="sim_main", name="stale sim")
+            update_job(running, status="running", terminal_mode="terminal", terminal_pid=999999)
+            fresh = create_job(paths, kind="build", name="fresh queued")
+
+            with patch("mujina_assist.services.jobs._pid_alive", return_value=False):
+                jobs = live_jobs(paths)
+
+            self.assertEqual([job.job_id for job in jobs], [fresh.job_id])
 
 
 if __name__ == "__main__":

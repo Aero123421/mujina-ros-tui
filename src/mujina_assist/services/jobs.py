@@ -220,6 +220,10 @@ def active_jobs(paths: AppPaths) -> list[JobRecord]:
     return [job for job in list_jobs(paths) if job.status == "running"]
 
 
+def live_jobs(paths: AppPaths) -> list[JobRecord]:
+    return [job for job in list_jobs(paths) if job.status in {"queued", "running"} and not job_is_stale(job)]
+
+
 def stale_running_jobs(paths: AppPaths) -> list[JobRecord]:
     return [job for job in active_jobs(paths) if job_is_stale(job)]
 
@@ -239,12 +243,12 @@ def stale_jobs(paths: AppPaths, *, queued_ttl_seconds: int = 30) -> list[JobReco
 def job_is_stale(job: JobRecord, *, queued_ttl_seconds: int = 30) -> bool:
     if job.status not in {"queued", "running"}:
         return False
+    if job.status == "queued" and _job_age_seconds(job) > queued_ttl_seconds:
+        return True
     if job.terminal_mode == "terminal" and job.terminal_pid is not None:
         return not _pid_alive(job.terminal_pid)
     if job.terminal_mode == "tmux" and job.terminal_label:
         return not _tmux_session_exists(job.terminal_label)
-    if job.status == "queued" and job.terminal_mode:
-        return _job_age_seconds(job) > queued_ttl_seconds
     return False
 
 

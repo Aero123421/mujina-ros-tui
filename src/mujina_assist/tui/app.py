@@ -10,8 +10,7 @@ from mujina_assist.services.checks import current_policy_label, workspace_signat
 from mujina_assist.services.jobs import (
     active_jobs,
     create_job,
-    job_is_stale,
-    list_jobs,
+    live_jobs,
     mark_job_finished,
     mark_job_stopped,
     recent_jobs,
@@ -167,11 +166,7 @@ if TEXTUAL_IMPORT_ERROR is None:
             self.exit()
 
         def launch_tui_job(self, *, kind: str, name: str, payload: dict | None = None) -> None:
-            conflicts = [
-                job
-                for job in list_jobs(self.paths)
-                if job.kind == kind and job.status in {"queued", "running"} and not job_is_stale(job)
-            ]
+            conflicts = [job for job in live_jobs(self.paths) if job.kind == kind]
             if conflicts:
                 existing = conflicts[0]
                 self.notify(
@@ -202,11 +197,7 @@ if TEXTUAL_IMPORT_ERROR is None:
                 self.notify("policy hash を取得できません。Setup/Build後に再実行してください。", severity="warning", timeout=10)
                 return
 
-            conflicts = [
-                job
-                for job in list_jobs(self.paths)
-                if job.kind in {"sim_main", "sim_joy"} and job.status in {"queued", "running"} and not job_is_stale(job)
-            ]
+            conflicts = [job for job in live_jobs(self.paths) if job.kind in {"sim_main", "sim_joy"}]
             if conflicts:
                 self.notify(
                     f"{conflicts[0].name} が {conflicts[0].status} です。Logsで状態を確認してください。",
@@ -261,7 +252,7 @@ if TEXTUAL_IMPORT_ERROR is None:
                 return
             current_signature = workspace_signature(self.paths)
             groups: dict[str, set[str]] = {}
-            for job in active_jobs(self.paths):
+            for job in live_jobs(self.paths):
                 if job.kind not in {"sim_main", "sim_joy"}:
                     continue
                 if str(job.payload.get("policy_hash", "")) != report.active_policy_hash:

@@ -102,6 +102,33 @@ class UpstreamTest(unittest.TestCase):
 
     def _write_required_assisted_patches(self, patches: Path) -> None:
         patches.mkdir(parents=True, exist_ok=True)
+        (patches / "0001-harden-can-setup.patch").write_text(
+            "\n".join(
+                [
+                    "diff --git a/mujina_control/scripts/can_setup_net.sh b/mujina_control/scripts/can_setup_net.sh",
+                    "new file mode 100644",
+                    "index 0000000..1111111",
+                    "--- /dev/null",
+                    "+++ b/mujina_control/scripts/can_setup_net.sh",
+                    "@@ -0,0 +1,3 @@",
+                    "+sudo ip link set can0 down || true",
+                    "+sudo ip link set can0 type can bitrate 1000000 restart-ms 100",
+                    "+sudo ip link set up can0",
+                    "diff --git a/mujina_control/scripts/can_setup_serial.sh b/mujina_control/scripts/can_setup_serial.sh",
+                    "new file mode 100644",
+                    "index 0000000..1111111",
+                    "--- /dev/null",
+                    "+++ b/mujina_control/scripts/can_setup_serial.sh",
+                    "@@ -0,0 +1,4 @@",
+                    "+sudo ip link set can0 down || true",
+                    "+sudo ip link delete can0 || true",
+                    "+sudo slcand -o -c -s8 /dev/usb_can can0",
+                    "+sudo ip link set up can0",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
         (patches / "0002-harden-imu-driver.patch").write_text(
             "\n".join(
                 [
@@ -265,20 +292,6 @@ class UpstreamTest(unittest.TestCase):
             (vendored / "mujina_control").mkdir(parents=True)
             (vendored / "README.md").write_text("official upstream\n", encoding="utf-8")
             (vendored / "mujina_control" / "can_setup.sh").write_text("ip link set can0 up\n", encoding="utf-8")
-            patches.mkdir(parents=True)
-            (patches / "0001-can-setup-harden.patch").write_text(
-                "\n".join(
-                    [
-                        "--- a/mujina_control/can_setup.sh",
-                        "+++ b/mujina_control/can_setup.sh",
-                        "@@ -1 +1 @@",
-                        "-ip link set can0 up",
-                        "+ip link set can0 type can bitrate 1000000 restart-ms 100",
-                        "",
-                    ]
-                ),
-                encoding="utf-8",
-            )
             self._write_required_assisted_patches(patches)
 
             vanilla = prepare_workspace(paths, mode="vanilla")
@@ -288,7 +301,7 @@ class UpstreamTest(unittest.TestCase):
             assisted = prepare_workspace(paths, mode="assisted")
             self.assertIn(
                 "restart-ms 100",
-                (paths.upstream_dir / "mujina_control" / "can_setup.sh").read_text(encoding="utf-8"),
+                (paths.upstream_dir / "mujina_control" / "scripts" / "can_setup_net.sh").read_text(encoding="utf-8"),
             )
             self.assertTrue(assisted.patched)
             self.assertEqual(assisted.patch_count, 4)
@@ -298,7 +311,7 @@ class UpstreamTest(unittest.TestCase):
             self.assertFalse(diagnostic.patched)
             self.assertIn("+diagnostic+", diagnostic.workspace_signature)
 
-    def test_assisted_mode_warns_when_patch_queue_is_empty(self) -> None:
+    def test_assisted_mode_fails_when_patch_queue_is_empty(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             paths = AppPaths.from_repo_root(Path(tmp))
             vendored = self._api("vendored_upstream_path")(paths)
@@ -310,9 +323,9 @@ class UpstreamTest(unittest.TestCase):
 
             assisted = prepare_workspace(paths, mode="assisted")
 
-            self.assertEqual(assisted.returncode, 0, assisted.stderr)
+            self.assertEqual(assisted.returncode, 1)
             self.assertFalse(assisted.patched)
-            self.assertIn("patch queue is empty", assisted.stdout)
+            self.assertIn("non-empty patch queue", assisted.stderr)
 
     def test_workspace_dirty_invalidates_sim_verified_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -372,7 +385,7 @@ class UpstreamTest(unittest.TestCase):
             assisted = prepare_workspace(paths, mode="assisted")
 
             self.assertEqual(assisted.returncode, 1)
-            self.assertIn("missing required patches: 0002, 0003, 0004", assisted.stderr)
+            self.assertIn("missing required patches: 0001, 0002, 0003, 0004", assisted.stderr)
             self.assertFalse(paths.upstream_dir.exists())
 
     def test_git_format_patch_applies_inside_workspace_under_parent_repo(self) -> None:
@@ -388,22 +401,6 @@ class UpstreamTest(unittest.TestCase):
             (vendored / "mujina_control").mkdir(parents=True)
             (vendored / "README.md").write_text("official upstream\n", encoding="utf-8")
             (vendored / "mujina_control" / "can_setup.sh").write_text("ip link set can0 up\n", encoding="utf-8")
-            patches.mkdir(parents=True)
-            (patches / "0001-can-setup-harden.patch").write_text(
-                "\n".join(
-                    [
-                        "diff --git a/mujina_control/can_setup.sh b/mujina_control/can_setup.sh",
-                        "index 1111111..2222222 100644",
-                        "--- a/mujina_control/can_setup.sh",
-                        "+++ b/mujina_control/can_setup.sh",
-                        "@@ -1 +1 @@",
-                        "-ip link set can0 up",
-                        "+ip link set can0 type can bitrate 1000000 restart-ms 100",
-                        "",
-                    ]
-                ),
-                encoding="utf-8",
-            )
             self._write_required_assisted_patches(patches)
 
             assisted = prepare_workspace(paths, mode="assisted")
@@ -411,7 +408,7 @@ class UpstreamTest(unittest.TestCase):
             self.assertEqual(assisted.returncode, 0, assisted.stderr)
             self.assertIn(
                 "restart-ms 100",
-                (paths.upstream_dir / "mujina_control" / "can_setup.sh").read_text(encoding="utf-8"),
+                (paths.upstream_dir / "mujina_control" / "scripts" / "can_setup_net.sh").read_text(encoding="utf-8"),
             )
             self.assertEqual((repo_root / "README.md").read_text(encoding="utf-8"), "parent repo file\n")
 

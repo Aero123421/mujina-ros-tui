@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import shutil
 from dataclasses import dataclass, field
@@ -45,22 +46,34 @@ def validate_zero_profile(
 ) -> ZeroProfileCheck:
     data = load_zero_profile(profile) if isinstance(profile, Path) else profile
     reasons: list[str] = []
-    if data.get("schema_version", 1) != 1:
+    if not isinstance(data, dict):
+        return ZeroProfileCheck(ok=False, allowed=False, errors=["zero profile must be a JSON object"], reasons=["zero profile must be a JSON object"])
+    schema_version = data.get("schema_version", 1)
+    if isinstance(schema_version, bool) or not isinstance(schema_version, int) or schema_version != 1:
         reasons.append("schema version is unsupported")
-    workspace_signature = str(data.get("workspace_signature", ""))
-    if current_workspace_signature and workspace_signature != current_workspace_signature:
+    workspace_signature = data.get("workspace_signature", "")
+    if not isinstance(workspace_signature, str) or not workspace_signature:
+        reasons.append("workspace signature is missing")
+    elif current_workspace_signature and workspace_signature != current_workspace_signature:
         reasons.append("workspace signature mismatch")
-    policy_hash = str(data.get("policy_hash", ""))
-    if current_policy_hash and policy_hash != current_policy_hash:
+    policy_hash = data.get("policy_hash", "")
+    if not isinstance(policy_hash, str) or not policy_hash:
+        reasons.append("policy hash is missing")
+    elif current_policy_hash and policy_hash != current_policy_hash:
         reasons.append("policy hash mismatch")
     motor_ids = data.get("motor_ids", DEFAULT_MOTOR_IDS)
-    if list(motor_ids) != DEFAULT_MOTOR_IDS:
+    if (
+        not isinstance(motor_ids, list)
+        or any(isinstance(motor_id, bool) or not isinstance(motor_id, int) for motor_id in motor_ids)
+        or list(motor_ids) != DEFAULT_MOTOR_IDS
+    ):
         reasons.append("motor ids do not match Mujina defaults")
-    try:
-        post_zero_error = float(data.get("post_zero_max_abs_position_rad", 999.0))
-    except (TypeError, ValueError):
-        post_zero_error = 999.0
-    if post_zero_error > max_abs_position_rad:
+    post_zero_error = data.get("post_zero_max_abs_position_rad")
+    if isinstance(post_zero_error, bool) or not isinstance(post_zero_error, (int, float)):
+        reasons.append("post-zero error must be a finite number")
+    elif not math.isfinite(float(post_zero_error)):
+        reasons.append("post-zero error must be a finite number")
+    elif float(post_zero_error) > max_abs_position_rad:
         reasons.append(f"post-zero error is too large: {post_zero_error:.3f} rad")
     ok = not reasons
     return ZeroProfileCheck(ok=ok, allowed=ok, errors=reasons, reasons=reasons)

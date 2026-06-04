@@ -4,6 +4,7 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+import math
 
 from mujina_assist.models import DEFAULT_MOTOR_IDS
 from mujina_assist.services.checks import file_hash
@@ -68,20 +69,26 @@ def parse_policy_manifest(data: dict[str, Any]) -> PolicyManifest:
     hash_data = _object_at(data, "hash")
     safety_data = _object_at(data, "safety")
     return PolicyManifest(
-        schema_version=_int_value(data.get("schema_version")),
+        schema_version=_required_int(data.get("schema_version"), "schema_version"),
         robot=str(data.get("robot", "")),
         robot_revision=str(data.get("robot_revision", "")),
         framework=str(data.get("framework", "")),
-        input_shape=_int_list(input_data.get("shape")),
-        observation_order=_str_list(input_data.get("observation_order")),
-        output_shape=_int_list(output_data.get("shape")),
+        input_shape=_int_list(input_data.get("shape"), "input.shape"),
+        observation_order=_str_list(input_data.get("observation_order"), "input.observation_order"),
+        output_shape=_int_list(output_data.get("shape"), "output.shape"),
         output_unit=str(output_data.get("unit", "")),
-        output_scale=_float_value(output_data.get("scale")),
+        output_scale=_required_float(output_data.get("scale"), "output.scale"),
         target_formula=str(output_data.get("target_formula", "")),
-        joint_order=_str_list(data.get("joint_order")),
+        joint_order=_str_list(data.get("joint_order"), "joint_order"),
         onnx_sha256=str(hash_data.get("onnx_sha256", "")),
-        requires_sim_verification=bool(safety_data.get("requires_sim_verification", True)),
-        real_world_approved=bool(safety_data.get("real_world_approved", False)),
+        requires_sim_verification=_required_bool(
+            safety_data.get("requires_sim_verification", True),
+            "safety.requires_sim_verification",
+        ),
+        real_world_approved=_required_bool(
+            safety_data.get("real_world_approved", False),
+            "safety.real_world_approved",
+        ),
         raw=data,
     )
 
@@ -136,39 +143,43 @@ def _object_at(data: dict[str, Any], key: str) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
-def _int_list(value: Any) -> list[int]:
+def _int_list(value: Any, field_name: str) -> list[int]:
     if not isinstance(value, list):
-        return []
+        raise ValueError(f"{field_name} must be a list of integers")
     result: list[int] = []
     for item in value:
         if isinstance(item, bool):
-            return []
-        try:
-            result.append(int(item))
-        except (TypeError, ValueError):
-            return []
+            raise ValueError(f"{field_name} must not contain bool values")
+        if not isinstance(item, int):
+            raise ValueError(f"{field_name} must contain integers")
+        result.append(item)
     return result
 
 
-def _int_value(value: Any) -> int:
-    if isinstance(value, bool):
-        return 0
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return 0
+def _required_int(value: Any, field_name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{field_name} must be an integer")
+    return value
 
 
-def _float_value(value: Any) -> float:
-    if isinstance(value, bool):
-        return 0.0
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return 0.0
+def _required_float(value: Any, field_name: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{field_name} must be a finite number")
+    result = float(value)
+    if not math.isfinite(result):
+        raise ValueError(f"{field_name} must be a finite number")
+    return result
 
 
-def _str_list(value: Any) -> list[str]:
+def _required_bool(value: Any, field_name: str) -> bool:
+    if not isinstance(value, bool):
+        raise ValueError(f"{field_name} must be a boolean")
+    return value
+
+
+def _str_list(value: Any, field_name: str) -> list[str]:
     if not isinstance(value, list):
-        return []
-    return [str(item) for item in value]
+        raise ValueError(f"{field_name} must be a list of strings")
+    if not all(isinstance(item, str) for item in value):
+        raise ValueError(f"{field_name} must contain strings")
+    return list(value)

@@ -65,11 +65,34 @@ class PolicyManifestTest(unittest.TestCase):
             self.assertIn("input.shape", " ".join(result.errors))
             self.assertIn("onnx_sha256", " ".join(result.errors))
 
+    def test_validate_policy_manifest_rejects_string_booleans_and_coerced_numbers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            policy = Path(tmp) / "policy.onnx"
+            policy.write_bytes(b"policy")
+            data = _manifest(file_hash(policy))
+            data["safety"]["real_world_approved"] = "false"
+
+            result = validate_policy_manifest_from_dict(data, policy)
+
+            self.assertFalse(result.ok)
+            self.assertIn("boolean", " ".join(result.errors))
+
+            data = _manifest(file_hash(policy))
+            data["output"]["scale"] = "0.25"
+            result = validate_policy_manifest_from_dict(data, policy)
+
+            self.assertFalse(result.ok)
+            self.assertIn("finite number", " ".join(result.errors))
+
 
 def validate_policy_manifest_from_dict(data: dict, policy: Path):
-    from mujina_assist.services.policy_manifest import parse_policy_manifest
+    from mujina_assist.services.policy_manifest import PolicyManifestValidation, parse_policy_manifest
 
-    return validate_policy_manifest(parse_policy_manifest(data), policy_path=policy)
+    try:
+        manifest = parse_policy_manifest(data)
+    except Exception as exc:
+        return PolicyManifestValidation(ok=False, errors=[str(exc)])
+    return validate_policy_manifest(manifest, policy_path=policy)
 
 
 if __name__ == "__main__":

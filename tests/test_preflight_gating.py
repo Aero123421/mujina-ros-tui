@@ -34,6 +34,9 @@ class PreflightGatingTest(unittest.TestCase):
     def _ready_state(self) -> RuntimeState:
         return RuntimeState(
             active_policy_hash="policy-sha256",
+            workspace_mode="assisted",
+            workspace_patch_set_hash="patches-abc",
+            workspace_dirty=False,
             last_sim_success=True,
             last_sim_policy_hash="policy-sha256",
             last_sim_verified_workspace_signature="38ff97f+patches-abc",

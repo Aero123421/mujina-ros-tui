@@ -13,7 +13,7 @@ from mujina_assist.services.checks import (
     inspect_can_status,
     list_serial_device_candidates,
 )
-from mujina_assist.services.jobs import active_jobs, list_jobs, recent_jobs, stale_jobs, summarize_job
+from mujina_assist.services.jobs import list_jobs, live_jobs, recent_jobs, stale_jobs, summarize_job
 from mujina_assist.services.policy_manifest import validate_policy_manifest
 from mujina_assist.services.safety import SafetyState, evaluate_real_preflight
 from mujina_assist.services.zero import validate_zero_profile
@@ -106,7 +106,7 @@ def _safety_state(paths: "AppPaths", state: "RuntimeState", report: "DoctorRepor
         policy_manifest=manifest,
         zero_profile=zero_profile,
         can_mode="net",
-        active_job_kinds={job.kind for job in active_jobs(paths)},
+        active_job_kinds={job.kind for job in live_jobs(paths)},
         operator_checklist_complete=False,
         real_confirmation="",
     )
@@ -297,7 +297,7 @@ if TEXTUAL_IMPORT_ERROR is None:
                 locks.append("[green]- P0 blockなし。Preflightへ進めます。[/]")
             self.query_one("#lock-summary", Static).update("\n".join(locks[:7]))
 
-            jobs = active_jobs(self.paths)
+            jobs = live_jobs(self.paths)
             stale = stale_jobs(self.paths)
             job_lines = ["[b]Running Jobs[/b]"]
             if jobs:
@@ -623,7 +623,7 @@ if TEXTUAL_IMPORT_ERROR is None:
 
         def _refresh(self) -> None:
             report = self.doctor_report()
-            jobs = active_jobs(self.paths)
+            jobs = live_jobs(self.paths)
             running_kinds = {job.kind for job in jobs}
             table = self.query_one("#skeleton-table", DataTable)
             table.clear(columns=True)

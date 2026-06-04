@@ -46,6 +46,21 @@ def evaluate_real_preflight(
     active_jobs = active_job_kinds or set()
 
     _add_if(reasons, not report.workspace_built, P0, "build_missing", "workspace のビルドが完了していません。")
+    _add_if(
+        reasons,
+        state.workspace_mode != "assisted",
+        P0,
+        "assisted_workspace_required",
+        "実機起動には assisted workspace が必要です。",
+    )
+    _add_if(reasons, state.workspace_dirty, P0, "workspace_dirty", "workspace に未検証の変更があります。")
+    _add_if(
+        reasons,
+        not state.workspace_patch_set_hash,
+        P0,
+        "assisted_patchset_missing",
+        "assisted patch set の検証情報がありません。",
+    )
     _add_if(reasons, not report.active_policy_hash, P0, "policy_unknown", "active policy が不明です。")
     _add_if(reasons, not report.sim_ready, P0, "sim_unverified", "現在の workspace + policy は SIM 確認済みではありません。")
     _add_if(reasons, state.manual_recovery_required, P0, "manual_recovery", state.manual_recovery_summary or "前回の手動復旧が未解決です。")

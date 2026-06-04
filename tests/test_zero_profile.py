@@ -90,6 +90,23 @@ class ZeroProfileTest(unittest.TestCase):
         self.assertFalse(result.allowed)
         self.assertIn("zero", " ".join(result.reasons).lower())
 
+    def test_zero_profile_rejects_missing_identity_and_string_error(self) -> None:
+        result = self._api("zero_profile_allows_real_launch")(
+            {
+                "schema_version": 1,
+                "motor_ids": [10, 11, 12, 7, 8, 9, 4, 5, 6, 1, 2, 3],
+                "post_zero_max_abs_position_rad": "0.01",
+            },
+            current_workspace_signature="38ff97f+patches-abc",
+            current_policy_hash="policy-sha256",
+        )
+
+        self.assertFalse(result.allowed)
+        joined = " ".join(result.reasons).lower()
+        self.assertIn("workspace", joined)
+        self.assertIn("policy", joined)
+        self.assertIn("finite number", joined)
+
 
 if __name__ == "__main__":
     unittest.main()

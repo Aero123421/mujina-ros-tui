@@ -28,6 +28,14 @@ def _ready_report() -> DoctorReport:
     )
 
 
+def _ready_state() -> RuntimeState:
+    return RuntimeState(
+        workspace_mode="assisted",
+        workspace_patch_set_hash="patches-sha256",
+        workspace_dirty=False,
+    )
+
+
 class SafetyTest(unittest.TestCase):
     def test_real_preflight_unlocks_when_p0_conditions_are_clear(self) -> None:
         zero = validate_zero_profile(
@@ -36,7 +44,7 @@ class SafetyTest(unittest.TestCase):
 
         safety = evaluate_real_preflight(
             _ready_report(),
-            RuntimeState(),
+            _ready_state(),
             zero_profile=zero,
             operator_checklist_complete=True,
             real_confirmation="REAL",
@@ -46,7 +54,7 @@ class SafetyTest(unittest.TestCase):
         self.assertEqual(p0_reasons(safety), [])
 
     def test_real_preflight_blocks_missing_zero_and_confirmation(self) -> None:
-        safety = evaluate_real_preflight(_ready_report(), RuntimeState())
+        safety = evaluate_real_preflight(_ready_report(), _ready_state())
 
         codes = {reason.code for reason in p0_reasons(safety)}
         self.assertTrue(safety.real_launch_locked)
@@ -64,7 +72,7 @@ class SafetyTest(unittest.TestCase):
 
         safety = evaluate_real_preflight(
             report,
-            RuntimeState(),
+            _ready_state(),
             zero_profile=zero,
             operator_checklist_complete=True,
             real_confirmation="REAL",
@@ -81,7 +89,7 @@ class SafetyTest(unittest.TestCase):
 
         safety = evaluate_real_preflight(
             report,
-            RuntimeState(),
+            _ready_state(),
             zero_profile=zero,
             operator_checklist_complete=True,
             real_confirmation="REAL",
@@ -101,7 +109,7 @@ class SafetyTest(unittest.TestCase):
 
         safety = evaluate_real_preflight(
             report,
-            RuntimeState(),
+            _ready_state(),
             zero_profile=zero,
             can_mode="serial",
             operator_checklist_complete=True,
@@ -112,6 +120,25 @@ class SafetyTest(unittest.TestCase):
         self.assertIn("serial_can0_missing", codes)
         self.assertIn("slcand_missing", codes)
         self.assertIn("can_unhealthy", codes)
+
+    def test_real_preflight_requires_assisted_clean_patchset(self) -> None:
+        zero = validate_zero_profile(
+            new_zero_profile(result="verified", operator_confirmed=True, post_zero_max_abs_position_rad=0.01)
+        )
+        state = RuntimeState(workspace_mode="vanilla", workspace_dirty=True, workspace_patch_set_hash="")
+
+        safety = evaluate_real_preflight(
+            _ready_report(),
+            state,
+            zero_profile=zero,
+            operator_checklist_complete=True,
+            real_confirmation="REAL",
+        )
+
+        codes = {reason.code for reason in p0_reasons(safety)}
+        self.assertIn("assisted_workspace_required", codes)
+        self.assertIn("workspace_dirty", codes)
+        self.assertIn("assisted_patchset_missing", codes)
 
 
 if __name__ == "__main__":

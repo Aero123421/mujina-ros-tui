@@ -216,16 +216,25 @@ TUI 上で `WAIT` / `LOCK` が見えても、それだけで安全が保証さ�
 
 ## 配布zip
 
-配布用 zip は作業ディレクトリをOSのzip機能で固めるのではなく、tracked file だけを含める `git archive` を推奨します。
+配布用 / review 用 zip は作業ディレクトリをOSのzip機能で固めず、tracked file だけを含めます。
+手作業の zip ではディレクトリ構造や `start.sh` の実行 bit が壊れやすいため、次のコマンドを使ってください。
+
+レビュー用に現在の作業ツリーを固める場合:
 
 ```bash
-git archive --format=zip --output mujina-ros-tui.zip HEAD
+./start.sh review-zip --output mujina-ros-tui-review.zip
+```
+
+release 用に git ref から固める場合:
+
+```bash
+./start.sh release-zip --ref HEAD --output mujina-ros-tui.zip
 ```
 
 特定タグから作る場合:
 
 ```bash
-git archive --format=zip --prefix=mujina-ros-tui/ --output mujina-ros-tui-v0.1.0.zip v0.1.0
+./start.sh release-zip --ref v0.1.0 --output mujina-ros-tui-v0.1.0.zip
 ```
 
 `.state/`、`cache/`、`logs/`、`workspace/`、`.venv/` などの生成物を混ぜないためです。
@@ -235,6 +244,7 @@ git archive --format=zip --prefix=mujina-ros-tui/ --output mujina-ros-tui-v0.1.0
 Real launch は、必要な確認が揃うまでロックされます。
 
 - workspace が build 済み
+- workspace が assisted mode で、dirty ではなく、assisted patch set が記録されている
 - active policy の出所が分かる
 - external policy に manifest がある
 - 現在の policy と workspace signature で SIM verified 済み

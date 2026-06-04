@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import shutil
 from dataclasses import asdict, dataclass, field
@@ -75,16 +76,19 @@ def load_zero_profile(path: Path) -> ZeroProfile:
 
 def parse_zero_profile(data: dict[str, Any]) -> ZeroProfile:
     return ZeroProfile(
-        schema_version=_int_value(data.get("schema_version")),
+        schema_version=_required_int(data.get("schema_version"), "schema_version"),
         created_at=str(data.get("created_at", "")),
         upstream_commit=str(data.get("upstream_commit", "")),
         patch_set_hash=str(data.get("patch_set_hash", "")),
         can_interface=str(data.get("can_interface", "")),
-        motor_ids=_int_list(data.get("motor_ids")),
-        joint_order=_str_list(data.get("joint_order")),
+        motor_ids=_int_list(data.get("motor_ids"), "motor_ids"),
+        joint_order=_str_list(data.get("joint_order"), "joint_order"),
         result=str(data.get("result", "")),
-        operator_confirmed=bool(data.get("operator_confirmed", False)),
-        post_zero_max_abs_position_rad=_float_value(data.get("post_zero_max_abs_position_rad")),
+        operator_confirmed=_required_bool(data.get("operator_confirmed", False), "operator_confirmed"),
+        post_zero_max_abs_position_rad=_required_float(
+            data.get("post_zero_max_abs_position_rad"),
+            "post_zero_max_abs_position_rad",
+        ),
         source=str(data.get("source", "")),
     )
 
@@ -192,14 +196,14 @@ def validate_zero_profile(
         errors.append(f"post-zero 位置誤差が大きすぎます: {profile.post_zero_max_abs_position_rad:.3f} rad")
     if expected_upstream_commit:
         if not profile.upstream_commit:
-            warnings.append("zero profile 作成時の upstream commit が記録されていません。")
+            errors.append("zero profile 作成時の upstream commit が記録されていません。")
         elif profile.upstream_commit != expected_upstream_commit:
-            warnings.append("zero profile 作成時の upstream commit と現在の commit が異なります。")
+            errors.append("zero profile 作成時の upstream commit と現在の commit が異なります。")
     if expected_patch_set_hash:
         if not profile.patch_set_hash:
-            warnings.append("zero profile 作成時の patch set が記録されていません。")
+            errors.append("zero profile 作成時の patch set が記録されていません。")
         elif profile.patch_set_hash != expected_patch_set_hash:
-            warnings.append("zero profile 作成時の patch set と現在の patch set が異なります。")
+            errors.append("zero profile 作成時の patch set と現在の patch set が異なります。")
     return ZeroProfileValidation(ok=not errors, errors=errors, warnings=warnings, profile=profile)
 
 
@@ -224,34 +228,41 @@ def _atomic_write_json(path: Path, data: dict[str, Any]) -> None:
                 pass
 
 
-def _int_list(value: Any) -> list[int]:
+def _int_list(value: Any, field_name: str) -> list[int]:
     if not isinstance(value, list):
-        return []
-    try:
-        return [int(item) for item in value]
-    except (TypeError, ValueError):
-        return []
+        raise ValueError(f"{field_name} must be a list of integers")
+    result: list[int] = []
+    for item in value:
+        if isinstance(item, bool) or not isinstance(item, int):
+            raise ValueError(f"{field_name} must contain integers")
+        result.append(item)
+    return result
 
 
-def _int_value(value: Any) -> int:
-    if isinstance(value, bool):
-        return 0
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return 0
+def _required_int(value: Any, field_name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{field_name} must be an integer")
+    return value
 
 
-def _float_value(value: Any) -> float:
-    if isinstance(value, bool):
-        return 0.0
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return 0.0
+def _required_float(value: Any, field_name: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{field_name} must be a finite number")
+    result = float(value)
+    if not math.isfinite(result):
+        raise ValueError(f"{field_name} must be a finite number")
+    return result
 
 
-def _str_list(value: Any) -> list[str]:
+def _required_bool(value: Any, field_name: str) -> bool:
+    if not isinstance(value, bool):
+        raise ValueError(f"{field_name} must be a boolean")
+    return value
+
+
+def _str_list(value: Any, field_name: str) -> list[str]:
     if not isinstance(value, list):
-        return []
-    return [str(item) for item in value]
+        raise ValueError(f"{field_name} must be a list of strings")
+    if not all(isinstance(item, str) for item in value):
+        raise ValueError(f"{field_name} must contain strings")
+    return list(value)
