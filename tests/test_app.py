@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from mujina_assist.app import MujinaAssistApp
-from mujina_assist.models import DEFAULT_MOTOR_IDS, DoctorReport, PolicyCandidate
+from mujina_assist.models import DEFAULT_MOTOR_IDS, DoctorCheck, DoctorReport, PolicyCandidate
 from mujina_assist.services.jobs import create_job, list_jobs, update_job
 from mujina_assist.services.motors import STANDBY_ANGLE
 from mujina_assist.services.zero import new_zero_profile, save_zero_profile
@@ -468,7 +468,10 @@ class AppTest(unittest.TestCase):
             self._prepare_built_workspace(app)
             app.state.real_setup_requires_relogin = True
 
-            with patch.object(app, "_select_can_mode") as select_can_mode_mock:
+            with patch(
+                "mujina_assist.app.real_setup_status",
+                return_value={"dialout": False, "udev_rule": True},
+            ), patch.object(app, "_select_can_mode") as select_can_mode_mock:
                 result = app.handle_real_robot()
 
             self.assertEqual(result, 1)
@@ -835,6 +838,196 @@ class AppTest(unittest.TestCase):
 
             self.assertEqual(result, 1)
             diagnostics_mock.assert_not_called()
+
+    def test_execute_real_launch_job_requires_real_confirmation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            app = MujinaAssistApp(Path(tmp))
+            job = create_job(app.paths, kind="real_launch", name="real", payload={"can_mode": "net"})
+
+            result = app._execute_real_launch_job(job)
+
+            self.assertEqual(result[0], 1)
+            self.assertIn("REAL", result[1])
+
+    def test_execute_real_launch_job_blocks_live_policy_switch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            app = MujinaAssistApp(Path(tmp))
+            job = create_job(
+                app.paths,
+                kind="real_launch",
+                name="real",
+                payload={"can_mode": "net", "operator_checklist_complete": True, "real_confirmation": "REAL"},
+            )
+            conflict = create_job(app.paths, kind="policy_switch", name="policy 切替")
+            update_job(conflict, status="running")
+
+            with patch.object(app, "_sync_relogin_requirement"), patch.object(
+                app,
+                "_require_built_workspace",
+                return_value=True,
+            ):
+                result = app._execute_real_launch_job(job)
+
+            self.assertEqual(result[0], 1)
+            self.assertIn("競合", result[1])
+
+    def test_execute_real_launch_job_rechecks_conflicts_after_preflight(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            app = MujinaAssistApp(Path(tmp))
+            job = create_job(
+                app.paths,
+                kind="real_launch",
+                name="real",
+                payload={"can_mode": "net", "operator_checklist_complete": True, "real_confirmation": "REAL"},
+            )
+            report = DoctorReport(
+                os_label="Ubuntu 24.04",
+                ubuntu_24_04=True,
+                ros_installed=True,
+                workspace_cloned=True,
+                workspace_built=True,
+                active_policy_label="公式デフォルト",
+                active_policy_hash="policy-sha256",
+                sim_ready=True,
+                real_devices={"/dev/rt_usb_imu": True, "/dev/input/js0": True, "can0": True},
+                imu_port_label="/dev/rt_usb_imu",
+            )
+            conflict = create_job(app.paths, kind="policy_switch", name="policy 切替")
+            update_job(conflict, status="running")
+
+            with patch.object(app, "_sync_relogin_requirement"), patch.object(
+                app,
+                "_require_built_workspace",
+                return_value=True,
+            ), patch.object(
+                app,
+                "_stale_jobs_for_kinds",
+                return_value=[],
+            ), patch.object(
+                app,
+                "_live_jobs_for_kinds",
+                side_effect=[[], [conflict]],
+            ), patch.object(
+                app,
+                "_active_policy_real_world_ready",
+                return_value=(True, ""),
+            ), patch.object(
+                app,
+                "_missing_devices_for_can_mode",
+                return_value=[],
+            ), patch(
+                "mujina_assist.app.build_doctor_report",
+                return_value=report,
+            ), patch.object(
+                app,
+                "_prepare_real_can_link",
+                return_value=True,
+            ), patch.object(
+                app,
+                "_run_real_motor_preflight_scan",
+                return_value=True,
+            ), patch.object(
+                app,
+                "_launch_real_job_group",
+            ) as launch_group_mock:
+                result = app._execute_real_launch_job(job)
+
+            self.assertEqual(result[0], 1)
+            self.assertIn("競合", result[1])
+            launch_group_mock.assert_not_called()
+
+    def test_execute_policy_switch_job_blocks_live_real_job(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            app = MujinaAssistApp(Path(tmp))
+            policy = Path(tmp) / "cached.onnx"
+            policy.write_bytes(b"policy")
+            job = create_job(
+                app.paths,
+                kind="policy_switch",
+                name="policy switch",
+                payload={"label": "cache policy", "path": str(policy), "source_type": "cache"},
+            )
+            conflict = create_job(app.paths, kind="real_main", name="実機 mujina_main")
+            update_job(conflict, status="running")
+
+            with patch("mujina_assist.app.activate_policy") as activate_mock:
+                result = app._execute_policy_switch_job(job)
+
+            self.assertEqual(result[0], 1)
+            self.assertIn("競合", result[1])
+            activate_mock.assert_not_called()
+
+    def test_execute_real_launch_job_creates_staged_jobs_after_gates(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            app = MujinaAssistApp(Path(tmp))
+            job = create_job(
+                app.paths,
+                kind="real_launch",
+                name="real",
+                payload={"can_mode": "net", "operator_checklist_complete": True, "real_confirmation": "REAL"},
+            )
+            report = DoctorReport(
+                os_label="Ubuntu 24.04",
+                ubuntu_24_04=True,
+                ros_installed=True,
+                workspace_cloned=True,
+                workspace_built=True,
+                active_policy_label="公式デフォルト",
+                active_policy_hash="policy-sha256",
+                sim_ready=True,
+                real_devices={"/dev/rt_usb_imu": True, "/dev/input/js0": True, "can0": True},
+                imu_port_label="/dev/rt_usb_imu",
+                checks=[DoctorCheck("can", "CAN", "ok", "healthy")],
+            )
+            app.state.workspace_patch_set_hash = "patch"
+            app.state.workspace_dirty = False
+
+            with patch.object(app, "_sync_relogin_requirement"), patch.object(
+                app,
+                "_require_built_workspace",
+                return_value=True,
+            ), patch.object(
+                app,
+                "_active_policy_real_world_ready",
+                return_value=(True, ""),
+            ), patch.object(
+                app,
+                "_missing_devices_for_can_mode",
+                return_value=[],
+            ), patch(
+                "mujina_assist.app.build_doctor_report",
+                return_value=report,
+            ), patch.object(
+                app,
+                "_prepare_real_can_link",
+                return_value=True,
+            ), patch.object(
+                app,
+                "_run_real_motor_preflight_scan",
+                return_value=True,
+            ), patch.object(
+                app,
+                "_active_policy_manifest_validation",
+                return_value=None,
+            ), patch.object(
+                app,
+                "_active_zero_profile_validation",
+                return_value=SimpleNamespace(ok=True, errors=[], warnings=[]),
+            ), patch.object(
+                app,
+                "_launch_real_job_group",
+                return_value=0,
+            ) as launch_group_mock:
+                result = app._execute_real_launch_job(job)
+
+            self.assertEqual(result[0], 0)
+            launch_group_mock.assert_called_once()
+            launched_jobs = launch_group_mock.call_args.args[0]
+            self.assertEqual([item.kind for item in launched_jobs], ["real_imu", "real_main", "real_joy"])
+            self.assertEqual({item.group_id for item in launched_jobs}, {launched_jobs[0].group_id})
+            self.assertEqual(launched_jobs[0].payload["wait_for"], "/imu/data")
+            self.assertEqual(launched_jobs[1].payload["wait_for"], "/robot_mode")
+            self.assertEqual(launched_jobs[2].payload["wait_for"], "/joy")
 
 
 if __name__ == "__main__":

@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from rich.markup import escape
 from rich.table import Table
 
 from mujina_assist.models import DEFAULT_MOTOR_IDS
@@ -27,7 +28,7 @@ try:
     from textual.app import ComposeResult
     from textual.containers import Container, Horizontal, Vertical
     from textual.screen import Screen
-    from textual.widgets import DataTable, Footer, Header, Label, ListItem, ListView, Static
+    from textual.widgets import DataTable, Footer, Header, Input, Label, ListItem, ListView, Static
 except Exception as exc:  # pragma: no cover - exercised only when optional deps are absent
     TEXTUAL_IMPORT_ERROR: Exception | None = exc
 else:
@@ -89,7 +90,15 @@ def _environment_short(report: "DoctorReport") -> str:
     }.get(report.environment_mode, "未判定")
 
 
-def _safety_state(paths: "AppPaths", state: "RuntimeState", report: "DoctorReport") -> SafetyState:
+def _safety_state(
+    paths: "AppPaths",
+    state: "RuntimeState",
+    report: "DoctorReport",
+    *,
+    can_mode: str = "net",
+    operator_checklist_complete: bool = False,
+    real_confirmation: str = "",
+) -> SafetyState:
     manifest = _active_policy_manifest_validation(report)
     zero_profile = (
         validate_zero_profile(
@@ -105,10 +114,10 @@ def _safety_state(paths: "AppPaths", state: "RuntimeState", report: "DoctorRepor
         state,
         policy_manifest=manifest,
         zero_profile=zero_profile,
-        can_mode="net",
+        can_mode=can_mode,
         active_job_kinds={job.kind for job in live_jobs(paths)},
-        operator_checklist_complete=False,
-        real_confirmation="",
+        operator_checklist_complete=operator_checklist_complete,
+        real_confirmation=real_confirmation,
     )
 
 
@@ -586,26 +595,162 @@ if TEXTUAL_IMPORT_ERROR is None:
             )
 
 
-    class PolicyScreen(SkeletonScreen):
+    class PolicyScreen(MujinaBaseScreen):
         BINDINGS = MujinaBaseScreen.BINDINGS + [
             ("t", "policy_test", "ONNX test"),
-            ("w", "policy_switch", "Switch CLI"),
+            ("a", "arm_policy", "候補確認"),
+            ("w", "policy_switch", "切替"),
+            ("f5", "refresh", "更新"),
         ]
-        SCREEN_TITLE = "Policy"
-        SCREEN_SUMMARY = "default / USB / cache / manifest / SIM verified"
-        ITEMS = [
-            ("policy一覧", "wait", "default, cache, USB候補"),
-            ("ONNX shape check", "wait", "[1,45] -> [1,12]"),
-            ("manifest validation", "lock", "external policyはmanifest必須"),
-            ("switch rollback", "wait", "default backupから復旧"),
-            ("SIM verified reset", "lock", "切替後は再確認"),
-        ]
+
+        def compose(self) -> ComposeResult:
+            yield Header(show_clock=True)
+            yield Container(
+                self.header("Policy", "default / cache / USB ONNX を自動検出"),
+                Horizontal(
+                    Vertical(ListView(id="policy-list"), Static(id="policy-actions"), classes="pane"),
+                    Vertical(Static(id="policy-detail"), Static(id="policy-warning"), classes="pane"),
+                ),
+                classes="screen-body",
+            )
+            yield Footer()
+
+        def on_mount(self) -> None:
+            self._armed_key: tuple[str, str, str] | None = None
+            self._candidates = []
+            self._refresh()
+
+        def _candidate_key(self, candidate: PolicyCandidate) -> tuple[str, str, str]:
+            return (candidate.policy_hash or "", str(candidate.path), candidate.source_type)
+
+        def _armed_candidate(self) -> PolicyCandidate | None:
+            if self._armed_key is None:
+                return None
+            for candidate in self._candidates:
+                if self._candidate_key(candidate) == self._armed_key:
+                    return candidate
+            return None
+
+        def _refresh(self) -> None:
+            report = self.doctor_report()
+            self._candidates = self.app.policy_candidates()
+            policy_list = self.query_one("#policy-list", ListView)
+            previous_index = policy_list.index or 0
+            policy_list.clear()
+            for index, candidate in enumerate(self._candidates):
+                chips: list[str] = []
+                if candidate.is_active:
+                    chips.append("使用中")
+                if candidate.sim_verified:
+                    chips.append("SIM済")
+                if candidate.source_type == "usb":
+                    chips.append("USB")
+                if candidate.manifest_path and candidate.manifest_path.exists():
+                    chips.append("manifest")
+                elif candidate.source_type in {"usb", "path"}:
+                    chips.append("manifestなし")
+                prefix = "ARM " if self._armed_key == self._candidate_key(candidate) else ""
+                suffix = f" [{' / '.join(chips)}]" if chips else ""
+                policy_list.append(ListItem(Label(f"{prefix}{escape(candidate.label)}{suffix}")))
+            if self._candidates:
+                policy_list.index = min(previous_index, len(self._candidates) - 1)
+            self._update_detail()
+            self.query_one("#policy-actions", Static).update(
+                "\n".join(
+                    [
+                        "[b]Actions[/b]",
+                        "↑/↓: policy候補を選択",
+                        "a: 選択候補を切替対象として確認",
+                        "w: ARM済み候補へ切替jobを起動",
+                        "t: 現在policyのONNX読み込みテスト",
+                        "F5: USB/cache候補を再スキャン",
+                        "",
+                        "[dim]USB上の .onnx は自動検出します。外部policyはmanifest付きだけTUI切替できます。[/dim]",
+                        f"[dim]current: {escape(report.active_policy_label)} / SIM {'verified' if report.sim_ready else 'not verified'}[/dim]",
+                    ]
+                )
+            )
+
+        def _selected_index(self) -> int | None:
+            if not self._candidates:
+                return None
+            index = self.query_one("#policy-list", ListView).index
+            if index is None:
+                return 0
+            return max(0, min(index, len(self._candidates) - 1))
+
+        def _selected_candidate(self):
+            index = self._selected_index()
+            return self._candidates[index] if index is not None else None
+
+        def _update_detail(self) -> None:
+            candidate = self._selected_candidate()
+            if candidate is None:
+                self.query_one("#policy-detail", Static).update("[b]候補なし[/b]\nUSBを挿すか、先にSetup/Buildを完了してください。")
+                self.query_one("#policy-warning", Static).update("")
+                return
+            manifest = str(candidate.manifest_path) if candidate.manifest_path else "なし"
+            lines = [
+                f"[b]{escape(candidate.label)}[/b]",
+                f"source: {escape(candidate.source_type)}",
+                f"path: {escape(str(candidate.path))}",
+                f"manifest: {escape(manifest)}",
+                f"hash: {(candidate.policy_hash or '')[:12] or '未計算'}",
+                f"size: {candidate.size_bytes / (1024 * 1024):.1f} MB" if candidate.size_bytes else "size: unknown",
+            ]
+            if candidate.description:
+                lines.append(f"description: {escape(candidate.description)}")
+            if candidate.is_active:
+                lines.append("[green]現在使用中です。[/]")
+            if candidate.sim_verified:
+                lines.append("[green]このpolicyはSIM確認済みです。[/]")
+            self.query_one("#policy-detail", Static).update("\n".join(lines))
+            warnings = []
+            if candidate.source_type in {"usb", "path"} and not (candidate.manifest_path and candidate.manifest_path.exists()):
+                warnings.append("[red]外部policyにmanifestがありません。TUI切替はロックします。[/]")
+            if self._armed_key is not None:
+                armed = self._armed_candidate()
+                if armed is None:
+                    self._armed_key = None
+                    warnings.append("[yellow]ARM済み候補が見つかりません。再スキャン後に選び直してください。[/]")
+                else:
+                    warnings.append(f"[yellow]ARM済み: {escape(armed.label)}。wで切替jobを起動します。切替後はSIM確認が無効になります。[/]")
+            self.query_one("#policy-warning", Static).update("\n".join(warnings))
+
+        def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
+            self._update_detail()
+
+        def action_refresh(self) -> None:
+            self._armed_key = None
+            self._refresh()
 
         def action_policy_test(self) -> None:
             self.app.launch_tui_job(kind="policy_test", name="ONNX 読み込みテスト")
 
+        def action_arm_policy(self) -> None:
+            index = self._selected_index()
+            if index is None:
+                self.app.notify("切替候補がありません。USB/cacheを確認してください。", severity="warning", timeout=8)
+                return
+            candidate = self._candidates[index]
+            if candidate.source_type in {"usb", "path"} and not (candidate.manifest_path and candidate.manifest_path.exists()):
+                self.app.notify("manifestなし外部policyはTUIでARMできません。./start.sh policy で明示確認してください。", severity="error", timeout=10)
+                return
+            self._armed_key = self._candidate_key(candidate)
+            self._refresh()
+
         def action_policy_switch(self) -> None:
-            self.app.show_cli_required("./start.sh policy", "policy切替は候補選択とmanifest確認が必要です")
+            if self._armed_key is None:
+                self.app.notify("先に a で切替候補をARMしてください。", severity="warning", timeout=8)
+                return
+            candidate = self._armed_candidate()
+            if candidate is None:
+                self.app.notify("候補一覧が変わっています。F5で再スキャンしてください。", severity="warning", timeout=8)
+                return
+            launched = self.app.launch_policy_switch_from_tui(candidate)
+            if launched:
+                self._armed_key = None
+            self._refresh()
 
 
     class SimulationScreen(SkeletonScreen):
@@ -696,27 +841,144 @@ if TEXTUAL_IMPORT_ERROR is None:
             self.app.show_cli_required("./start.sh preflight", "preflightはCAN mode選択をCLIで確認してください")
 
 
-    class RealLaunchScreen(SkeletonScreen):
+    class RealLaunchScreen(MujinaBaseScreen):
         BINDINGS = MujinaBaseScreen.BINDINGS + [
+            ("n", "select_net", "CAN net"),
+            ("ctrl+n", "select_net", "CAN net"),
+            ("u", "select_serial", "CAN serial"),
+            ("ctrl+u", "select_serial", "CAN serial"),
+            ("1", "toggle_pose", "姿勢/停止"),
+            ("f1", "toggle_pose", "姿勢/停止"),
+            ("2", "toggle_gamepad", "gamepad"),
+            ("f2", "toggle_gamepad", "gamepad"),
+            ("3", "toggle_policy", "policy理解"),
+            ("f3", "toggle_policy", "policy理解"),
+            ("ctrl+e", "execute_real", "起動"),
             ("f", "open_preflight", "Preflight"),
-            ("x", "robot_cli", "Robot CLI"),
+            ("f5", "refresh", "更新"),
         ]
         SCREEN_TITLE = "Real Launch"
         SCREEN_SUMMARY = "段階起動"
-        ITEMS = [
-            ("CAN setup", "wait", "net / serial"),
-            ("IMU node", "wait", "wait /imu/data"),
-            ("zero-gain motor query", "lock", "main起動前"),
-            ("mujina_main", "lock", "wait /robot_mode"),
-            ("joy node", "lock", "wait /joy"),
-            ("standup unlock", "lock", "operator確認後"),
-        ]
+
+        def compose(self) -> ComposeResult:
+            yield Header(show_clock=True)
+            yield Container(
+                self.header("Real Launch", "P0/P1/P2確認後に IMU -> main -> joy を段階起動"),
+                DataTable(id="real-launch-table"),
+                Static(id="real-checklist"),
+                Input(placeholder="実機起動する場合だけ REAL と入力", id="real-confirm"),
+                Static(id="real-launch-note"),
+                classes="screen-body",
+            )
+            yield Footer()
+
+        def on_mount(self) -> None:
+            self._can_mode = "net"
+            self._pose_ok = False
+            self._gamepad_ok = False
+            self._policy_ok = False
+            self._refresh()
+            self.set_interval(2.0, self._refresh)
+
+        def _refresh(self) -> None:
+            report = self.doctor_report()
+            checklist_complete = self._pose_ok and self._gamepad_ok and self._policy_ok
+            try:
+                real_confirmation = self.query_one("#real-confirm", Input).value.strip()
+            except Exception:
+                real_confirmation = ""
+            safety = _safety_state(
+                self.paths,
+                self.state,
+                report,
+                can_mode=self._can_mode,
+                operator_checklist_complete=checklist_complete,
+                real_confirmation=real_confirmation,
+            )
+            table = self.query_one("#real-launch-table", DataTable)
+            table.clear(columns=True)
+            table.add_columns("Gate", "Status", "Summary")
+            rows = [
+                ("CAN mode", "ok" if self._can_mode in {"net", "serial"} else "warn", self._can_mode),
+                ("workspace", "ok" if report.workspace_built else "lock", "build済み" if report.workspace_built else "build未完了"),
+                ("policy", _status_from_reasons(safety, {"policy_unknown", "policy_manifest_missing", "policy_manifest_invalid"}, default="ok"), report.active_policy_label),
+                ("SIM verified", "ok" if report.sim_ready else "lock", report.sim_verified_at or "未確認"),
+                ("zero profile", _status_from_reasons(safety, {"zero_profile_missing", "zero_profile_invalid", "zero_profile_warning"}), "verified required"),
+                ("IMU", "ok" if report.imu_port_label and not report.imu_port_fallback else "lock", report.imu_port_label or "missing"),
+                ("CAN", _status_from_reasons(safety, {"can0_missing", "serial_can_missing", "serial_can0_missing", "slcand_missing", "can_unhealthy"}, default="ok"), "can0 / usb_can"),
+                ("joy", "ok" if report.real_devices.get("/dev/input/js0") else "warn", "/dev/input/js0"),
+            ]
+            blocking_codes = [reason.code for reason in safety.reasons if reason.code not in {"operator_checklist", "real_confirmation"}]
+            final_codes = [reason.code for reason in safety.reasons if reason.code in {"operator_checklist", "real_confirmation"}]
+            rows.append(
+                (
+                    "Launch locks",
+                    "lock" if blocking_codes else "warn" if final_codes else "ok",
+                    ", ".join(blocking_codes or final_codes) or "clear",
+                )
+            )
+            _add_rows(table, rows)
+            checks = [
+                f"1 [{'x' if self._pose_ok else ' '}] 原点/STANDBY姿勢、周囲離隔、補助者、物理停止手段",
+                f"2 [{'x' if self._gamepad_ok else ' '}] gamepad X mode / MODE LED OFF / /joy応答",
+                f"3 [{'x' if self._policy_ok else ' '}] policyの由来、学習条件、robot revisionを把握",
+            ]
+            self.query_one("#real-checklist", Static).update("[b]Operator Checklist[/b]\n" + "\n".join(checks))
+            action_lines = [
+                "[b]Actions[/b]",
+                "n/u または Ctrl+N/Ctrl+U: CAN modeを net / serial に切替",
+                "1/2/3 または F1/F2/F3: checklistをtoggle",
+                "REAL入力後 Enter / Ctrl+E: CAN setup -> 12軸zero-gain scan -> 最終preflight -> 段階起動",
+                "f: Real Preflight画面へ",
+            ]
+            if blocking_codes:
+                action_lines.append("[red]起動不可: " + ", ".join(blocking_codes[:6]) + "[/]")
+                action_lines.append("[dim]P1/P2も実機起動前に解消します。[/dim]")
+            elif final_codes:
+                action_lines.append("[yellow]残りは最終確認のみです。checklistとREAL入力後に Enter / Ctrl+E で起動できます。[/]")
+            else:
+                action_lines.append("[green]実機起動条件は揃っています。Enter / Ctrl+E で段階起動できます。[/]")
+            self.query_one("#real-launch-note", Static).update("\n".join(action_lines))
+
+        def on_input_submitted(self, event: Input.Submitted) -> None:
+            if event.input.id == "real-confirm":
+                self.action_execute_real()
+
+        def action_refresh(self) -> None:
+            self._refresh()
 
         def action_open_preflight(self) -> None:
             self.app.action_open_screen("real-preflight")
 
-        def action_robot_cli(self) -> None:
-            self.app.show_cli_required("./start.sh robot", "実機起動はP0/P1/P2、operator checklist、REAL入力をCLIで通します")
+        def action_select_net(self) -> None:
+            self._can_mode = "net"
+            self._refresh()
+
+        def action_select_serial(self) -> None:
+            self._can_mode = "serial"
+            self._refresh()
+
+        def action_toggle_pose(self) -> None:
+            self._pose_ok = not self._pose_ok
+            self._refresh()
+
+        def action_toggle_gamepad(self) -> None:
+            self._gamepad_ok = not self._gamepad_ok
+            self._refresh()
+
+        def action_toggle_policy(self) -> None:
+            self._policy_ok = not self._policy_ok
+            self._refresh()
+
+        def action_execute_real(self) -> None:
+            confirm = self.query_one("#real-confirm", Input).value.strip()
+            checklist_complete = self._pose_ok and self._gamepad_ok and self._policy_ok
+            self.app.launch_real_from_tui(
+                can_mode=self._can_mode,
+                real_confirmation=confirm,
+                checklist_complete=checklist_complete,
+            )
+            self._refresh()
 
 
     class LogScreen(MujinaBaseScreen):

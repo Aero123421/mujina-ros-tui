@@ -103,6 +103,20 @@ from mujina_assist.services.zero import (
 
 WORKER_CLAIM_TIMEOUT_SECONDS = 5.0
 WORKER_CLAIM_POLL_SECONDS = 0.1
+OPERATION_CONFLICT_KINDS = {
+    "setup",
+    "build",
+    "policy_switch",
+    "policy_test",
+    "motor_read",
+    "zero",
+    "real_launch",
+    "real_imu",
+    "real_main",
+    "real_joy",
+    "sim_main",
+    "sim_joy",
+}
 
 
 class MujinaAssistApp:
@@ -791,11 +805,146 @@ class MujinaAssistApp:
             heading="実機用ジョブを段階起動しました。",
         )
 
+    def _execute_real_launch_job(self, job: JobRecord) -> tuple[int, str, bool]:
+        can_mode = str(job.payload.get("can_mode", "net"))
+        checklist_complete = bool(job.payload.get("operator_checklist_complete", False))
+        real_confirmation = str(job.payload.get("real_confirmation", ""))
+        if can_mode not in {"net", "serial"}:
+            return 1, f"未知の CAN mode です: {can_mode}", False
+        if real_confirmation != "REAL":
+            return 1, "`REAL` confirmation が未入力です。", False
+        if not checklist_complete:
+            return 1, "operator checklist が未完了です。", False
+
+        self._sync_relogin_requirement()
+        if not self._require_built_workspace():
+            return 1, "workspace のビルドが完了していません。", False
+        if self.state.real_setup_requires_relogin:
+            error("dialout / udev の設定反映後なので、先にログアウト / ログインしてください。")
+            return 1, "再ログインが必要です。", False
+
+        stale_relevant = self._stale_jobs_for_kinds(OPERATION_CONFLICT_KINDS, exclude_job_id=job.job_id)
+        if stale_relevant:
+            warn("stale job が残っています。実機起動前に repair で整理してください。")
+            for item in stale_relevant[:6]:
+                bullet(f"{item.name}: {item.status}")
+            return 1, "stale job が残っています。", False
+
+        conflicts = self._live_jobs_for_kinds(OPERATION_CONFLICT_KINDS, exclude_job_id=job.job_id)
+        if conflicts:
+            warn("実機起動と競合する job が実行中です。")
+            for item in conflicts[:6]:
+                bullet(f"{item.name}: {item.status}")
+            return 1, "競合 job が実行中です。", False
+
+        self._sync_default_policy_state()
+        report = build_doctor_report(self.paths, self.state)
+        if can_mode == "serial" and not report.tool_status.get("slcand", False):
+            error("serial CAN を使うには `slcand` が必要です。")
+            return 1, "slcand がありません。", False
+        policy_ready, policy_reason = self._active_policy_real_world_ready()
+        if not policy_ready:
+            error("現在の policy は provenance / 実機互換の確認が不足しています。")
+            bullet(policy_reason)
+            return 1, policy_reason, False
+
+        missing = self._missing_devices_for_can_mode(can_mode, include_imu=True, include_joy=True)
+        if missing:
+            self._report_missing_devices(
+                "実機起動に必要なデバイスが足りません。",
+                missing,
+                can_mode=can_mode,
+                include_imu=True,
+                include_joy=True,
+            )
+            return 1, "実機起動に必要なデバイスが足りません。", False
+
+        imu_port = "/dev/rt_usb_imu"
+        if not report.real_devices:
+            report.real_devices = detect_real_devices()
+        if not report.real_devices.get("/dev/rt_usb_imu", False):
+            error("実機起動では固定名 `/dev/rt_usb_imu` が必要です。")
+            return 1, "固定名 IMU が確認できません。", False
+        report.imu_port_label = imu_port
+        report.imu_port_fallback = False
+        if not report.sim_ready:
+            error("現在の workspace + policy では SIM確認済みの記録がありません。")
+            return 1, "SIM確認済みの記録がありません。", False
+
+        if not self._prepare_real_can_link(can_mode):
+            return 1, "実機起動前の CAN setup に失敗しました。", False
+        if not self._run_real_motor_preflight_scan(can_mode):
+            return 1, "実機起動前の motor live check に失敗しました。", False
+
+        conflicts = self._live_jobs_for_kinds(OPERATION_CONFLICT_KINDS, exclude_job_id=job.job_id)
+        if conflicts:
+            warn("preflight 中に競合 job が開始されました。実機起動を中止します。")
+            for item in conflicts[:6]:
+                bullet(f"{item.name}: {item.status}")
+            return 1, "競合 job が実行中です。", False
+
+        refreshed_report = build_doctor_report(self.paths, self.state)
+        refreshed_report.imu_port_label = imu_port
+        refreshed_report.imu_port_fallback = False
+        safety = evaluate_real_preflight(
+            refreshed_report,
+            self.state,
+            policy_manifest=self._active_policy_manifest_validation(),
+            zero_profile=self._active_zero_profile_validation(),
+            can_mode=can_mode,
+            active_job_kinds={item.kind for item in live_jobs(self.paths) if item.job_id != job.job_id},
+            operator_checklist_complete=True,
+            real_confirmation=real_confirmation,
+        )
+        hard_blocks = p0_reasons(safety)
+        if hard_blocks:
+            error("実機起動はまだロックされています。")
+            for reason in hard_blocks:
+                bullet(reason.message)
+            return 1, "P0 lock が残っています。", False
+        if safety.standup_locked:
+            error("実機起動後に STANDUP へ進む条件がまだ不足しています。")
+            for reason in safety.reasons:
+                if reason.priority in {"P0", "P1"}:
+                    bullet(reason.message)
+            return 1, "standup lock が残っています。", False
+
+        group_id = f"real-{uuid4().hex[:8]}"
+        jobs = [
+            create_job(
+                self.paths,
+                kind="real_imu",
+                name=f"実機 IMU ノード ({Path(imu_port).name})",
+                group_id=group_id,
+                payload={"imu_port": imu_port, "stage": 1, "wait_for": "/imu/data"},
+            ),
+            create_job(
+                self.paths,
+                kind="real_main",
+                name="実機 mujina_main",
+                group_id=group_id,
+                payload={"can_mode": can_mode, "stage": 2, "wait_for": "/robot_mode"},
+            ),
+            create_job(
+                self.paths,
+                kind="real_joy",
+                name="実機 joy ノード",
+                group_id=group_id,
+                payload={"stage": 3, "wait_for": "/joy"},
+            ),
+        ]
+        returncode = self._launch_real_job_group(jobs)
+        if returncode == 0:
+            self.state.last_action = "real_launch"
+            self.save_state()
+            return 0, "実機用ジョブを段階起動しました。", False
+        return returncode, "実機用ジョブの段階起動に失敗しました。", False
+
     def handle_policy_menu(self) -> int:
         title("policy を切り替える")
         if not self._require_built_workspace():
             return 1
-        if not self._confirm_no_conflicting_jobs({"policy_switch", "build", "setup"}):
+        if not self._confirm_no_conflicting_jobs(OPERATION_CONFLICT_KINDS, allow_override=False):
             return 1
         capture_default_policy(self.paths)
         candidates = all_policy_candidates(self.paths, self.state)
@@ -1133,6 +1282,8 @@ class MujinaAssistApp:
                         next_steps=["`ロボット診断` で `/dev/input/js0` を確認してください。"],
                         allow_sigint_stop=True,
                     )
+                elif job.kind == "real_launch":
+                    returncode, message, stopped = self._execute_real_launch_job(job)
                 elif job.kind == "can_setup":
                     can_mode = str(job.payload.get("can_mode", "net"))
                     returncode, message, stopped = self._execute_shell_job(
@@ -1269,6 +1420,20 @@ class MujinaAssistApp:
         return 0, "ビルドが完了しました。", False
 
     def _execute_policy_switch_job(self, job: JobRecord) -> tuple[int, str, bool]:
+        stale_relevant = self._stale_jobs_for_kinds(OPERATION_CONFLICT_KINDS, exclude_job_id=job.job_id)
+        if stale_relevant:
+            warn("stale job が残っています。policy切替前に repair で整理してください。")
+            for item in stale_relevant[:6]:
+                bullet(f"{item.name}: {item.status}")
+            return 1, "stale job が残っています。", False
+
+        conflicts = self._live_jobs_for_kinds(OPERATION_CONFLICT_KINDS, exclude_job_id=job.job_id)
+        if conflicts:
+            warn("policy切替と競合する job が実行中です。")
+            for item in conflicts[:6]:
+                bullet(f"{item.name}: {item.status}")
+            return 1, "競合 job が実行中です。", False
+
         candidate = self._candidate_from_payload(job.payload)
         ok, message = activate_policy(self.paths, self.state, candidate, job_log_path(job))
         self.save_state()
@@ -1654,8 +1819,18 @@ class MujinaAssistApp:
             )
             self.save_state()
 
+    def _live_jobs_for_kinds(self, relevant_kinds: set[str], *, exclude_job_id: str | None = None) -> list[JobRecord]:
+        return [job for job in live_jobs(self.paths) if job.kind in relevant_kinds and job.job_id != exclude_job_id]
+
+    def _stale_jobs_for_kinds(self, relevant_kinds: set[str], *, exclude_job_id: str | None = None) -> list[JobRecord]:
+        return [
+            job
+            for job in list_jobs(self.paths)
+            if job.kind in relevant_kinds and job.job_id != exclude_job_id and job.status in {"queued", "running"} and job_is_stale(job)
+        ]
+
     def _confirm_no_conflicting_jobs(self, relevant_kinds: set[str], *, allow_override: bool = True) -> bool:
-        conflicts = [job for job in live_jobs(self.paths) if job.kind in relevant_kinds]
+        conflicts = self._live_jobs_for_kinds(relevant_kinds)
         if conflicts:
             warn("同系統のジョブ記録が残っています。必要ならログで確認してください。")
             for job in conflicts:
