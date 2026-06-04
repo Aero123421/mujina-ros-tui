@@ -135,15 +135,12 @@ class AppTest(unittest.TestCase):
             self.assertTrue(jobs[0].payload["skip_upgrade"])
             self.assertTrue(jobs[0].payload["setup_real_devices"])
 
-    def test_setup_runs_inline_when_tmux_and_gui_are_unavailable(self) -> None:
+    def test_setup_runs_inline_to_keep_sudo_prompt_visible(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             app = MujinaAssistApp(Path(tmp))
             job = create_job(app.paths, kind="setup", name="初回セットアップ")
 
-            with patch("mujina_assist.app.has_graphical_session", return_value=False), patch(
-                "mujina_assist.app.command_exists",
-                return_value=False,
-            ), patch.object(app, "run_worker", return_value=0) as run_worker_mock, patch(
+            with patch.object(app, "run_worker", return_value=0) as run_worker_mock, patch(
                 "mujina_assist.app.launch_job"
             ) as launch_job_mock:
                 result = app._launch_job(job)

@@ -22,7 +22,6 @@ from mujina_assist.services.checks import (
     workspace_build_ready,
     workspace_clone_ready,
     write_config_file,
-    command_exists,
 )
 from mujina_assist.services.can import detect_slcand_processes, evaluate_can_health, slcand_summary
 from mujina_assist.services.jobs import (
@@ -73,7 +72,7 @@ from mujina_assist.services.processes import (
 from mujina_assist.services.shell import run_bash
 from mujina_assist.services.safety import evaluate_real_preflight, p0_reasons
 from mujina_assist.services.state import load_runtime_state, save_runtime_state
-from mujina_assist.services.terminals import has_graphical_session, launch_job, stop_job_launch
+from mujina_assist.services.terminals import launch_job, stop_job_launch
 from mujina_assist.services.upstream import sync_runtime_workspace_state
 from mujina_assist.services.workspace import (
     capture_default_policy,
@@ -1485,9 +1484,10 @@ class MujinaAssistApp:
         return returncode in {130, 143, -2, -15}
 
     def _launch_job(self, job: JobRecord) -> int:
-        if job.kind == "setup" and not has_graphical_session() and not command_exists("tmux"):
-            warn("tmux と GUI 端末がまだ使えないため、この端末内で初回セットアップを実行します。")
+        if job.kind == "setup":
+            warn("初回セットアップはこの端末内で実行します。")
             bullet("sudo のパスワード入力が必要な場合は、この画面に表示されます。")
+            bullet("apt / rosdep / colcon build が終わるまで、この端末を開いたままにしてください。")
             return self.run_worker(job.job_file)
 
         launch = launch_job(self.paths, job)
