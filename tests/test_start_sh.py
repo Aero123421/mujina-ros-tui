@@ -9,6 +9,9 @@ class StartShTest(unittest.TestCase):
         script = Path("start.sh").read_text(encoding="utf-8")
         self.assertIn('if [[ "$#" -eq 0 ]]; then', script)
         self.assertIn('if "$VENV_PYTHON" -m pip --version', script)
+        self.assertIn("install_python_bootstrap_packages()", script)
+        self.assertIn("sudo apt-get install -y python3-venv python3-pip", script)
+        self.assertIn("ensure_venv_dependencies", script)
         self.assertIn('exec "${RUNNER[@]}" -m mujina_assist.main tui', script)
         self.assertIn('exec "${RUNNER[@]}" -m mujina_assist.main "$@"', script)
 
