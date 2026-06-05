@@ -962,11 +962,13 @@ class MujinaAssistApp:
             if not raw_path.exists() or raw_path.suffix.lower() != ".onnx":
                 error("有効な ONNX ファイルが見つかりませんでした。")
                 return 1
+            manifest_path = raw_path.with_suffix(".manifest.json")
             candidate = PolicyCandidate(
                 label=f"手動指定: {raw_path.name}",
                 path=raw_path,
                 source_type="path",
                 description=str(raw_path),
+                manifest_path=manifest_path if manifest_path.exists() else None,
             )
         else:
             candidate = candidates[selected]

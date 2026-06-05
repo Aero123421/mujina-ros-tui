@@ -136,6 +136,10 @@ VMで試すだけなら、`udev / dialout` や `device確認` が `WARN` でも�
 - manifestを編集して `F5` を押すと、`manifest` / `manifest要修正` / `実機未承認` が一覧で分かります。
 - 切替後は必ずSimulation画面でSIM確認をやり直してください。
 
+`g` で雛形を作ると、画面上でも `manifest要修正` と表示されます。この状態ではまだARMできません。
+
+![Policy manifest template](assets/screenshots/policy-manifest-template.png)
+
 CLIでmanifest雛形だけ作る場合:
 
 ```bash
