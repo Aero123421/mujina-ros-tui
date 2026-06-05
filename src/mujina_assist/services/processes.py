@@ -122,7 +122,7 @@ def build_motor_probe_script(
         offset_by_id = {{{offset_literal}}}
         print('# using Socket {{}} for can communication'.format(device))
         print('# motor ids: {{}}'.format(ids))
-        print('# probe kind: zero-gain one-shot query')
+        print('# probe kind: zero-torque read-only one-shot query (kp/kd/tau=0)')
         print('# mujina transforms: {{}}'.format('on' if use_mujina_transforms else 'off'))
         assert ids, 'please input motor ids'
 

@@ -256,7 +256,7 @@ if TEXTUAL_IMPORT_ERROR is None:
                 FlowItem("setup", "Setup", "ok" if report.workspace_cloned else "warn", "workspace / upstream 準備"),
                 FlowItem("device", "Device", imu_status, "VMでは未接続OK" if vm_mode else "IMU / USB-CAN / joy"),
                 FlowItem("can", "CAN", can_status, "VMでは未接続OK" if vm_mode else "SocketCAN / serial CAN"),
-                FlowItem("motor", "Motor", "wait", "12軸の zero-gain one-shot query"),
+                FlowItem("motor", "Motor", "wait", "12軸の zero-torque read-only query"),
                 FlowItem("zero", "Zero", zero_status, "zero profile / post verification"),
                 FlowItem("policy", "Policy", policy_status, report.active_policy_label),
                 FlowItem("simulation", "Simulation", "ok" if report.sim_ready else "warn", "policy変更後のSIM確認"),
@@ -499,7 +499,7 @@ if TEXTUAL_IMPORT_ERROR is None:
         def compose(self) -> ComposeResult:
             yield Header(show_clock=True)
             yield Container(
-                self.header("Motor", "12軸 zero-gain one-shot query / read-only job"),
+                self.header("Motor", "12軸 zero-torque read-only query / read-only job"),
                 DataTable(id="motor-table"),
                 Static(id="motor-actions"),
                 classes="screen-body",
@@ -571,7 +571,7 @@ if TEXTUAL_IMPORT_ERROR is None:
         ITEMS = [
             ("CAN状態確認", "wait", "can0 healthy required"),
             ("対象motor選択", "wait", "all / leg / single"),
-            ("zero-gain one-shot query", "wait", "kp/kd/tau=0 の一回問い合わせ"),
+            ("zero-torque read-only query", "wait", "kp/kd/tau=0 の一回問い合わせ"),
             ("operator checklist", "lock", "所定姿勢と停止手段"),
             ("upstream zero script", "lock", "motor_set_zero_position.py"),
             ("zero profile保存", "wait", "post-zero verification後に保存"),
@@ -975,7 +975,7 @@ if TEXTUAL_IMPORT_ERROR is None:
             )
             _add_rows(table, rows)
             checks = [
-                f"1 [{'x' if self._pose_ok else ' '}] 原点/STANDBY姿勢、周囲離隔、補助者、物理停止手段",
+                f"1 [{'x' if self._pose_ok else ' '}] 登録済み起動姿勢/STANDBY、周囲離隔、補助者、物理停止手段",
                 f"2 [{'x' if self._gamepad_ok else ' '}] gamepad X mode / MODE LED OFF / /joy応答",
                 f"3 [{'x' if self._policy_ok else ' '}] policyの由来、学習条件、robot revisionを把握",
             ]
@@ -984,7 +984,7 @@ if TEXTUAL_IMPORT_ERROR is None:
                 "[b]Actions[/b]",
                 "n/u または Ctrl+N/Ctrl+U: CAN modeを net / serial に切替",
                 "1/2/3 または F1/F2/F3: checklistをtoggle",
-                "REAL入力後 Enter / Ctrl+E: CAN setup -> 12軸zero-gain scan -> 最終preflight -> 段階起動",
+                "REAL入力後 Enter / Ctrl+E: CAN setup -> 12軸zero-torque read-only scan -> 最終preflight -> 段階起動",
                 "f: Real Preflight画面へ",
             ]
             if blocking_codes:

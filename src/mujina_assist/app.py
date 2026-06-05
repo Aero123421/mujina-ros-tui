@@ -72,6 +72,12 @@ from mujina_assist.services.processes import (
 from mujina_assist.services.shell import run_bash
 from mujina_assist.services.safety import evaluate_real_preflight, p0_reasons
 from mujina_assist.services.state import load_runtime_state, save_runtime_state
+from mujina_assist.services.startup_pose import (
+    load_active_startup_pose_profile,
+    save_startup_pose_profile_from_scan,
+    startup_pose_scan_errors,
+    validate_startup_pose_profile,
+)
 from mujina_assist.services.terminals import launch_job, stop_job_launch
 from mujina_assist.services.upstream import sync_runtime_workspace_state
 from mujina_assist.services.workspace import (
@@ -738,7 +744,7 @@ class MujinaAssistApp:
             interactive=False,
         )
         if result.returncode != 0:
-            error("実機起動前の 12 軸 zero-gain query に失敗しました。")
+            error("実機起動前の 12 軸 zero-torque read-only query に失敗しました。")
             bullet(f"ログ: {log_path}")
             return False
         output = log_path.read_text(encoding="utf-8", errors="ignore") if log_path.exists() else result.stdout
@@ -749,7 +755,8 @@ class MujinaAssistApp:
         )
         scan_path = log_path.with_suffix(".json")
         save_scan_result(scan_path, scan_result)
-        errors = validate_scan_for_real_launch(scan_result)
+        extra_safe_poses = self._real_launch_extra_safe_poses()
+        errors = validate_scan_for_real_launch(scan_result, extra_safe_poses=extra_safe_poses)
         if errors:
             error("実機起動前の motor live check が通っていません。")
             for reason in errors[:8]:
@@ -759,6 +766,12 @@ class MujinaAssistApp:
         success("実機起動前の motor live check が通りました。")
         bullet(f"scan: {scan_path}")
         return True
+
+    def _real_launch_extra_safe_poses(self) -> dict[str, list[float]]:
+        validation = self._active_startup_pose_validation()
+        if validation is None or not validation.ok or validation.profile is None:
+            return {}
+        return {validation.profile.label or "startup_pose": validation.profile.positions_rad}
 
     def _prepare_real_can_link(self, can_mode: str) -> bool:
         section("CAN reset / setup")
@@ -1147,6 +1160,87 @@ class MujinaAssistApp:
             ],
         )
         return result.returncode
+
+    def handle_startup_pose(self, can_mode: str = "auto") -> int:
+        title("実機起動姿勢を登録する")
+        self._sync_relogin_requirement()
+        if not self._require_built_workspace():
+            return 1
+        if not self._confirm_no_conflicting_jobs({"motor_read", "zero", "real_launch", "real_main"}, allow_override=False):
+            return 1
+        selected_can_mode = self._select_can_mode(can_mode)
+        if selected_can_mode is None:
+            return 1
+        missing = self._missing_devices_for_can_mode(selected_can_mode, include_imu=False, include_joy=False)
+        if missing:
+            self._report_missing_devices(
+                "起動姿勢登録に必要な CAN デバイスが足りません。",
+                missing,
+                can_mode=selected_can_mode,
+                include_imu=False,
+                include_joy=False,
+            )
+            return 1
+        if not self._prepare_real_can_link(selected_can_mode):
+            return 1
+        warn("この操作は現在の12軸角度を、Real Launch前に許容する起動姿勢として保存します。")
+        bullet("zero姿勢やSTANDBY姿勢ではなく、実際に起動前へ置く姿勢で停止させてください。")
+        bullet("周囲離隔、補助者、物理停止手段、gamepad状態を確認してから進めてください。")
+        if not ask_yes_no("現在の姿勢を起動姿勢として登録しますか？", default=False):
+            warn("起動姿勢登録を中止しました。")
+            return 1
+        typed = ask_text("本当に登録する場合だけ `STARTUP` と入力してください。")
+        if typed != "STARTUP":
+            warn("起動姿勢登録を中止しました。")
+            return 1
+        return self._record_startup_pose(selected_can_mode)
+
+    def _record_startup_pose(self, can_mode: str) -> int:
+        section("Startup pose motor scan")
+        log_path = self.paths.logs_dir / f"startup-pose-{datetime.now().strftime('%Y%m%d-%H%M%S')}.log"
+        result = run_bash(
+            build_motor_probe_script(
+                self.paths,
+                DEFAULT_MOTOR_IDS,
+                can_mode,
+                include_can_setup=False,
+                use_mujina_transforms=True,
+            ),
+            cwd=self.paths.workspace_dir,
+            log_path=log_path,
+            interactive=False,
+        )
+        if result.returncode != 0:
+            error("起動姿勢登録用の motor scan に失敗しました。")
+            bullet(f"ログ: {log_path}")
+            return result.returncode
+        output = log_path.read_text(encoding="utf-8", errors="ignore") if log_path.exists() else result.stdout
+        scan_result = build_scan_result(
+            parse_probe_output(output),
+            can_interface="can0",
+            scan_kind="startup_pose_mujina_frame_read_only_query",
+        )
+        scan_path = log_path.with_suffix(".json")
+        save_scan_result(scan_path, scan_result)
+        scan_errors = startup_pose_scan_errors(scan_result)
+        if scan_errors:
+            error("現在姿勢は起動姿勢profileとして保存できません。")
+            for reason in scan_errors[:8]:
+                bullet(reason)
+            bullet(f"scan: {scan_path}")
+            return 1
+        saved_path = save_startup_pose_profile_from_scan(
+            self.paths,
+            scan_result,
+            upstream_commit=self.state.workspace_upstream_commit,
+            patch_set_hash=self.state.workspace_patch_set_hash,
+            operator_confirmed=True,
+        )
+        success("起動姿勢profileを保存しました。")
+        bullet(f"profile: {saved_path}")
+        bullet(f"active: {self.paths.active_startup_pose_file}")
+        bullet(f"scan: {scan_path}")
+        return 0
 
     def handle_robot_diagnostics(self, can_mode: str = "auto") -> int:
         title("ロボット診断")
@@ -2178,6 +2272,23 @@ class MujinaAssistApp:
             expected_patch_set_hash=self.state.workspace_patch_set_hash,
         )
 
+    def _active_startup_pose_validation(self):
+        try:
+            profile = load_active_startup_pose_profile(self.paths)
+        except Exception:
+            return validate_startup_pose_profile(
+                self.paths.active_startup_pose_file,
+                expected_upstream_commit=self.state.workspace_upstream_commit,
+                expected_patch_set_hash=self.state.workspace_patch_set_hash,
+            )
+        if profile is None:
+            return None
+        return validate_startup_pose_profile(
+            profile,
+            expected_upstream_commit=self.state.workspace_upstream_commit,
+            expected_patch_set_hash=self.state.workspace_patch_set_hash,
+        )
+
     def _ask_ids(self, *, default_to_all: bool = False) -> list[int]:
         prompt = "対象のモータ ID を空白またはカンマ区切りで入力してください。"
         if default_to_all:
@@ -2339,6 +2450,8 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("sim-verified")
     subparsers.add_parser("logs")
     subparsers.add_parser("motor-diagnostics")
+    startup_pose_parser = subparsers.add_parser("startup-pose")
+    startup_pose_parser.add_argument("--can-mode", choices=["auto", "net", "serial"], default="auto")
 
     review_zip_parser = subparsers.add_parser("review-zip")
     review_zip_parser.add_argument("--output", default="")
@@ -2414,6 +2527,8 @@ def run_app(repo_root: Path, argv: list[str] | None = None) -> int:
         return app.handle_release_zip(output_path=args.output, ref=args.ref)
     if command == "motor-diagnostics":
         return app.handle_motor_diagnostics()
+    if command == "startup-pose":
+        return app.handle_startup_pose(can_mode=args.can_mode)
     if command == "robot":
         return app.handle_real_robot(can_mode=args.can_mode)
     if command == "policy":

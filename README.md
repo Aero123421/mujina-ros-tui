@@ -18,7 +18,7 @@
 - policy manifest と SIM verification の状態を見えるようにする
 - zero profile と post-zero verification を保存、確認する
 - 実機起動前に不足している条件を `LOCK` として表示する
-- real launch 前に 12 軸 zero-gain query、`/imu/data`、`/robot_mode`、`/joy` の live health を段階確認する
+- real launch 前に 12 軸 zero-torque read-only query、`/imu/data`、`/robot_mode`、`/joy` の live health を段階確認する
 - 長い処理や常駐プロセスを job として管理し、ログを追う
 - stale job や残った claim を `repair` で整理し、壊れた状態から再実行しやすくする
 
@@ -182,7 +182,7 @@ mujina-ros-tui/
 
 本家 `mujina_ros` の `motor_set_zero_position.py` は、自動で原点探索や初期位置復帰を行うスクリプトではありません。人間が README の原点姿勢へ物理的に置いたあと、「今の姿勢を motor zero として書く」ための手順です。間違った姿勢で zero を実行すると、その間違った姿勢が原点として記録されます。
 
-実機 `mujina_main` は起動直後に `can0` の 12 軸を作成し、offset を入れ、motor enable 後に現在角から `STANDBY_ANGLE` へ補間します。そのため zero、motor ID、向き、offset、CAN 状態、起動姿勢がずれていると、`/robot_mode` が見える前後で大きな意図しない動きにつながります。TUI は real launch 前の motor scan を本家 main と同じ direction / gear / offset 座標で読み、原点姿勢または STANDBY 姿勢に近い場合だけ進めます。
+実機 `mujina_main` は起動直後に `can0` の 12 軸を作成し、offset を入れ、motor enable 後に現在角から `STANDBY_ANGLE` へ補間します。そのため zero、motor ID、向き、offset、CAN 状態、起動姿勢がずれていると、`/robot_mode` が見える前後で大きな意図しない動きにつながります。TUI は real launch 前の motor scan を本家 main と同じ direction / gear / offset 座標で読みます。この scan は 0 ポジション確認ではなく `kp/kd/tau=0` の read-only 確認です。起動時の実姿勢が STANDBY と異なる場合は、実機をその姿勢に置いて `./start.sh startup-pose` で登録してから Real Launch へ進みます。
 
 ROS の emergency stop は高D damping 停止であり、物理電源遮断ではありません。実機起動時は必ず独立した物理停止手段を用意してください。
 
@@ -207,7 +207,7 @@ workspace signature は upstream commit、mode、patch set hash、workspace tree
 - Logs の確認
 - workspace の clean copy 作成と signature 確認
 - CAN setup 手順の確認、または明示的に選んだ CAN setup job の起動
-- read-only / zero-gain の motor query による疎通確認
+- read-only / zero-torque の motor query による疎通確認
 
 禁止または確認付き CLI に委譲する操作:
 

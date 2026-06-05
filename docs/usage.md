@@ -251,7 +251,7 @@ CAN setupは通信路の準備です。motorの動作確認は次のMotor画面�
 3. `l` でLogs画面を開き、motor read job logを見ます。
 4. 12軸のID、角度、応答が想定外なら、zeroやReal Launchへ進まず配線、CAN mode、motor IDを確認します。
 
-このread-only queryは、Real Launch前に「通信が見えているか」「座標やIDが大きく崩れていないか」を見るためのものです。ここで違和感がある場合は、実機を動かす前に止めます。
+このread-only queryは、Real Launch前に「通信が見えているか」「座標やIDが大きく崩れていないか」を見るためのものです。`kp/kd/tau=0` で問い合わせるため、0ポジション確認という意味ではありません。ここで違和感がある場合は、実機を動かす前に止めます。
 
 ### 4.5 Zero
 
@@ -266,7 +266,27 @@ CAN setupは通信路の準備です。motorの動作確認は次のMotor画面�
 
 zeroは自動原点復帰ではありません。人間が置いた現在姿勢をzeroとして保存します。姿勢を間違えたままzeroを書くと、その間違いが原点になります。
 
-### 4.6 Policy と SIM
+### 4.6 起動姿勢 profile
+
+Real Launch前のmotor scanは、0ポジションにいるかを見るものではありません。実際の起動前姿勢がSTANDBYと違う場合は、その姿勢を登録しておきます。
+
+1. ロボットを実際に起動前へ置く姿勢に物理的に置き、停止させます。
+2. 周囲離隔、補助者、物理停止手段、CAN modeを確認します。
+3. 確認付きCLIで起動姿勢を登録します。
+
+```bash
+./start.sh startup-pose
+```
+
+serial CANを使う場合:
+
+```bash
+./start.sh startup-pose --can-mode serial
+```
+
+この操作は12軸の現在角度をMujina座標で保存します。保存時には全軸応答、低速度、低電流、温度、error codeを確認しますが、STANDBY姿勢やzero姿勢に近いことは要求しません。保存された起動姿勢は、次回以降のReal Launch前scanで安全な開始姿勢候補として使われます。
+
+### 4.7 Policy と SIM
 
 1. `p` でPolicy画面を開きます。
 2. 外部policyならmanifestを整え、`manifest要修正` が消えていることを確認します。
@@ -276,7 +296,7 @@ zeroは自動原点復帰ではありません。人間が置いた現在姿勢�
 
 `real_world_approved=true` は「TUIが自動で安全判定した」という意味ではありません。人間が学習条件、robot revision、SIM挙動、周囲の安全を確認したという印です。
 
-### 4.7 Real Preflight
+### 4.8 Real Preflight
 
 1. `r` でReal Preflight画面を開きます。
 2. `P0` が残っていないか確認します。
@@ -284,7 +304,7 @@ zeroは自動原点復帰ではありません。人間が置いた現在姿勢�
 
 `sim_unverified`、`zero_profile_missing`、`imu_missing`、`can0_missing`、`serial_can_missing`、`serial_can0_missing`、`slcand_missing`、`can_unhealthy` が残っている場合は、Real Launchへ進まず該当画面へ戻ります。
 
-### 4.8 Real Launch
+### 4.9 Real Launch
 
 1. Dashboardに戻る場合は `d` を押します。
 2. 右上のFlow一覧で `Real Launch` を選び、`Enter` を押します。
@@ -299,7 +319,7 @@ zeroは自動原点復帰ではありません。人間が置いた現在姿勢�
 
 | Key | 確認すること |
 | --- | --- |
-| `1` / `F1` | 原点/STANDBY姿勢、周囲離隔、補助者、物理停止手段 |
+| `1` / `F1` | 登録済み起動姿勢/STANDBY、周囲離隔、補助者、物理停止手段 |
 | `2` / `F2` | gamepad X mode、MODE LED OFF、`/joy` 応答 |
 | `3` / `F3` | policyの由来、学習条件、robot revision |
 
@@ -314,7 +334,7 @@ Real Launch jobは、起動直前にもう一度安全確認を行います。�
 2. policy、manifest、SIM確認済み状態確認
 3. `/dev/rt_usb_imu`、CAN、gamepad確認
 4. CAN setup
-5. 12軸 zero-gain motor scan
+5. 12軸 zero-torque read-only motor scan
 6. 最終preflight
 7. IMU node → `mujina_main` → joy node の順で段階起動
 
@@ -366,7 +386,7 @@ Real Launch画面は、実機を段階起動するための画面です。Dashbo
 | --- | --- |
 | `n` / `Ctrl+N` | CAN modeを `net` にする |
 | `u` / `Ctrl+U` | CAN modeを `serial` にする |
-| `1` / `F1` | 原点/STANDBY姿勢、周囲離隔、補助者、物理停止手段を確認 |
+| `1` / `F1` | 登録済み起動姿勢/STANDBY、周囲離隔、補助者、物理停止手段を確認 |
 | `2` / `F2` | gamepad X mode、MODE LED OFF、`/joy` 応答を確認 |
 | `3` / `F3` | policyの由来、学習条件、robot revisionを把握 |
 | `Enter` / `Ctrl+E` | `REAL` 入力後に段階起動 |
@@ -378,7 +398,7 @@ Real Launch画面は、実機を段階起動するための画面です。Dashbo
 2. policy、manifest、SIM確認済み状態を確認
 3. `/dev/rt_usb_imu`、CAN、gamepadを確認
 4. CAN setupを実行
-5. 12軸zero-gain motor scanを実行
+5. 12軸zero-torque read-only motor scanを実行
 6. 最終preflightを確認
 7. IMU node → `mujina_main` → joy node の順で段階起動
 

@@ -34,6 +34,8 @@ class AppPaths:
     policy_history_file: Path
     zero_profiles_dir: Path
     active_zero_profile_file: Path
+    startup_poses_dir: Path
+    active_startup_pose_file: Path
 
     @classmethod
     def from_repo_root(cls, repo_root: Path) -> "AppPaths":
@@ -73,6 +75,8 @@ class AppPaths:
             policy_history_file=state_dir / "policy_history.jsonl",
             zero_profiles_dir=state_dir / "zero_profiles",
             active_zero_profile_file=state_dir / "zero_profile.json",
+            startup_poses_dir=state_dir / "startup_poses",
+            active_startup_pose_file=state_dir / "startup_pose.json",
         )
 
     def ensure_directories(self) -> None:
@@ -90,6 +94,7 @@ class AppPaths:
             self.patches_dir,
             self.upstream_patches_dir,
             self.zero_profiles_dir,
+            self.startup_poses_dir,
         ):
             path.mkdir(parents=True, exist_ok=True)
 

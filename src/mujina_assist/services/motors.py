@@ -179,6 +179,7 @@ def validate_scan_for_real_launch(
     max_abs_velocity_rad_s: float = 0.2,
     max_abs_current_a: float = 10.0,
     max_safe_pose_error_rad: float = 0.35,
+    extra_safe_poses: dict[str, list[float]] | None = None,
 ) -> list[str]:
     errors: list[str] = []
     if result.motor_ids != DEFAULT_MOTOR_IDS:
@@ -205,7 +206,7 @@ def validate_scan_for_real_launch(
             errors.append(f"motor {entry.motor_id} current が読めません。")
         elif abs(entry.current_a) > max_abs_current_a:
             errors.append(f"motor {entry.motor_id} current={entry.current_a:.3f} A が大きすぎます。")
-    pose_error = closest_safe_pose_error(result)
+    pose_error = closest_safe_pose_error(result, extra_safe_poses=extra_safe_poses)
     if pose_error is None:
         errors.append("実機起動前姿勢を判定できません。")
     else:
@@ -217,13 +218,18 @@ def validate_scan_for_real_launch(
     return errors
 
 
-def closest_safe_pose_error(result: MotorScanResult) -> tuple[str, float] | None:
+def closest_safe_pose_error(
+    result: MotorScanResult,
+    *,
+    extra_safe_poses: dict[str, list[float]] | None = None,
+) -> tuple[str, float] | None:
     positions = [entry.position_rad for entry in result.entries if entry.responded]
     if len(positions) != len(DEFAULT_MOTOR_IDS) or any(position is None for position in positions):
         return None
     best: tuple[str, float] | None = None
     numeric_positions = [float(position) for position in positions if position is not None]
-    for name, reference in SAFE_REAL_LAUNCH_POSES.items():
+    safe_poses = {**SAFE_REAL_LAUNCH_POSES, **(extra_safe_poses or {})}
+    for name, reference in safe_poses.items():
         if len(reference) != len(numeric_positions):
             continue
         max_error = max(abs(position - expected) for position, expected in zip(numeric_positions, reference))
