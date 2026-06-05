@@ -112,7 +112,7 @@ TUI では下部 footer の keybind から各画面へ移動します。
 - CAN: `n` で network CAN setup、`u` で serial CAN setup、`F5` で状態再取得を行います。
 - Motor: `n` / `u` で全12軸 read-only query job を network / serial CAN で起動します。値は Logs の job log で確認します。
 - Zero: `n` / `u` で zero 前の read-only query を起動できます。原点書き込みは `./start.sh zero` の確認付き CLI に委譲します。
-- Policy: `a` で候補をARM、`w` でARM済み候補への切替jobを起動、`t` でONNX読み込みテスト、`F5` でUSB/cache候補を再スキャンします。manifestなし外部policyはTUIではARMできません。
+- Policy: `a` で候補をARM、`w` でARM済み候補への切替jobを起動、`g` でmanifestなし外部policyの雛形を作成、`t` でONNX読み込みテスト、`F5` でUSB/cache候補を再スキャンします。外部policyはmanifestを整えるまでARMできません。
 - Simulation: `o` でSIM本体とjoyノードを起動、`v` で現在のworkspace + policyをSIM確認済みにします。
 - Real Preflight: `f` で確認付きCLI `./start.sh preflight` を起動します。
 - Real Launch: Dashboard のFlow一覧から開きます。`n` / `u` でCAN mode、`1` / `2` / `3` でoperator checklist、`REAL` 入力後に `Enter` / `Ctrl+E` で段階起動します。P0/P1/P2 lockや競合jobが残っている場合は起動しません。

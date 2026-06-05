@@ -18,7 +18,7 @@ from mujina_assist.services.jobs import (
     update_job,
 )
 from mujina_assist.services.policy import all_policy_candidates, cleanup_policy_cache, import_policy_to_cache
-from mujina_assist.services.policy_manifest import validate_policy_manifest
+from mujina_assist.services.policy_manifest import validate_policy_manifest, write_policy_manifest_template
 from mujina_assist.services.state import load_runtime_state, save_runtime_state
 from mujina_assist.services.terminals import launch_job, stop_job_launch
 from mujina_assist.services.workspace import capture_default_policy
@@ -270,6 +270,24 @@ if TEXTUAL_IMPORT_ERROR is None:
                 self.save_runtime_state()
                 self.notify("policy切替後はSIM確認が再度必要です。", severity="warning", timeout=10)
             return launched
+
+        def write_manifest_template_from_tui(self, candidate: PolicyCandidate) -> bool:
+            if candidate.source_type not in {"usb", "path"}:
+                self.notify("manifest雛形はUSB/手動指定の外部policy向けです。", severity="warning", timeout=8)
+                return False
+            if candidate.manifest_path is not None and candidate.manifest_path.exists():
+                self.notify("このpolicyにはすでにmanifestがあります。内容を編集してF5で再確認してください。", severity="warning", timeout=10)
+                return False
+            try:
+                manifest_path = write_policy_manifest_template(candidate.path)
+            except FileExistsError as exc:
+                self.notify(f"manifestは既にあります: {exc}", severity="warning", timeout=10)
+                return False
+            except Exception as exc:
+                self.notify(f"manifest雛形の作成に失敗しました: {exc}", severity="error", timeout=12)
+                return False
+            self.notify(f"manifest雛形を作成しました: {manifest_path.name}。robot_revisionを編集してF5で再確認してください。", severity="information", timeout=14)
+            return True
 
         def launch_real_from_tui(self, *, can_mode: str, real_confirmation: str, checklist_complete: bool) -> None:
             self.refresh_runtime_state()

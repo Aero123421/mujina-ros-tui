@@ -57,7 +57,7 @@ from mujina_assist.services.policy import (
     cleanup_policy_cache,
     import_policy_to_cache,
 )
-from mujina_assist.services.policy_manifest import validate_policy_manifest
+from mujina_assist.services.policy_manifest import validate_policy_manifest, write_policy_manifest_template
 from mujina_assist.services.processes import (
     build_joy_script,
     build_can_setup_script,
@@ -973,10 +973,31 @@ class MujinaAssistApp:
         self._show_policy_summary(candidate)
         if candidate.source_type in {"usb", "path"} and candidate.manifest_path is None:
             warn("この policy には manifest が無く、学習元や robot revision の手掛かりが不足しています。")
-            bullet("実機投入前に、学習元 task・作成日時・対象 robot revision を別途確認してください。")
-            if not ask_yes_no("それでもこの policy を候補として扱いますか？", default=False):
+            bullet("TUIではmanifestを整えるまで切替できません。")
+            bullet("manifest雛形を作ると、hash・shape・joint_order の確認項目を同じファイル名で管理できます。")
+            if ask_yes_no("このONNXの隣に manifest 雛形を作成しますか？", default=True):
+                self.handle_policy_manifest_template(candidate.path)
+                warn("manifestを編集してから、もう一度 policy 画面を開いてください。")
+                return 1
+            if not ask_yes_no("manifestなしでpolicy切替だけ進めますか？実機起動はロックされます。", default=False):
                 warn("policy 切り替えを中止しました。")
                 return 1
+        elif candidate.source_type in {"usb", "path"} and candidate.manifest_path is not None:
+            validation = validate_policy_manifest(candidate.manifest_path, policy_path=candidate.path)
+            if not validation.ok:
+                error("policy manifest が不正です。切替前に修正してください。")
+                for item in validation.errors:
+                    bullet(item)
+                return 1
+            real_validation = validate_policy_manifest(
+                candidate.manifest_path,
+                policy_path=candidate.path,
+                require_real_world_approved=True,
+            )
+            if not real_validation.ok:
+                warn("policy切替は可能ですが、このままでは実機起動はロックされます。")
+                for item in real_validation.errors:
+                    bullet(item)
         if not ask_yes_no("この policy に切り替えますか？", default=True):
             warn("policy 切り替えを中止しました。")
             return 1
@@ -988,6 +1009,34 @@ class MujinaAssistApp:
             payload=self._candidate_to_payload(prepared),
         )
         return self._launch_job(job)
+
+    def handle_policy_manifest_template(
+        self,
+        policy_path: Path,
+        *,
+        manifest_output: str = "",
+        overwrite: bool = False,
+        robot_revision: str = "",
+    ) -> int:
+        title("policy manifest 雛形を作成する")
+        output_path = Path(manifest_output) if manifest_output else None
+        try:
+            manifest_path = write_policy_manifest_template(
+                policy_path,
+                manifest_path=output_path,
+                overwrite=overwrite,
+                robot_revision=robot_revision,
+            )
+        except Exception as exc:
+            error(f"manifest 雛形の作成に失敗しました: {exc}")
+            return 1
+        success("manifest 雛形を作成しました。")
+        bullet(f"ONNX: {policy_path.expanduser()}")
+        bullet(f"manifest: {manifest_path}")
+        bullet("次は manifest を開き、robot_revision を実機/学習対象に合わせて設定してください。")
+        bullet("SIM確認が終わるまで safety.real_world_approved は false のままにしてください。")
+        bullet("編集後は TUI の Policy 画面で F5 を押すか、`./start.sh policy --test` を実行してください。")
+        return 0
 
     def handle_policy_test(self) -> int:
         title("ONNX 読み込みテスト")
@@ -2302,6 +2351,10 @@ def build_parser() -> argparse.ArgumentParser:
     policy_parser = subparsers.add_parser("policy")
     policy_parser.add_argument("--test", action="store_true")
     policy_parser.add_argument("--cleanup-cache", action="store_true")
+    policy_parser.add_argument("--write-manifest-template", default="")
+    policy_parser.add_argument("--manifest-output", default="")
+    policy_parser.add_argument("--overwrite-manifest", action="store_true")
+    policy_parser.add_argument("--robot-revision", default="")
 
     motor_parser = subparsers.add_parser("motor-read")
     motor_parser.add_argument("--ids", nargs="+", type=int)
@@ -2362,6 +2415,13 @@ def run_app(repo_root: Path, argv: list[str] | None = None) -> int:
     if command == "robot":
         return app.handle_real_robot(can_mode=args.can_mode)
     if command == "policy":
+        if args.write_manifest_template:
+            return app.handle_policy_manifest_template(
+                Path(args.write_manifest_template),
+                manifest_output=args.manifest_output,
+                overwrite=args.overwrite_manifest,
+                robot_revision=args.robot_revision,
+            )
         if args.cleanup_cache:
             return app.handle_policy_cache_cleanup()
         return app.handle_policy_test() if args.test else app.handle_policy_menu()

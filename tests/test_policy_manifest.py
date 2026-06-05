@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
 
-from mujina_assist.services.policy_manifest import DEFAULT_JOINT_ORDER, validate_policy_manifest
+from mujina_assist.services.policy_manifest import (
+    DEFAULT_JOINT_ORDER,
+    default_manifest_path,
+    validate_policy_manifest,
+    write_policy_manifest_template,
+)
 from mujina_assist.services.checks import file_hash
 
 
@@ -83,6 +89,44 @@ class PolicyManifestTest(unittest.TestCase):
 
             self.assertFalse(result.ok)
             self.assertIn("finite number", " ".join(result.errors))
+
+    def test_write_policy_manifest_template_creates_adjacent_draft(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            policy = Path(tmp) / "usb.onnx"
+            policy.write_bytes(b"policy")
+
+            manifest_path = write_policy_manifest_template(policy)
+            data = json.loads(manifest_path.read_text(encoding="utf-8"))
+            validation = validate_policy_manifest(manifest_path, policy_path=policy)
+            real_validation = validate_policy_manifest(
+                manifest_path,
+                policy_path=policy,
+                require_real_world_approved=True,
+            )
+
+            self.assertEqual(manifest_path, default_manifest_path(policy))
+            self.assertEqual(data["hash"]["onnx_sha256"], file_hash(policy))
+            self.assertFalse(validation.ok)
+            self.assertIn("robot_revision", " ".join(validation.errors))
+            self.assertFalse(real_validation.ok)
+            self.assertIn("real_world_approved", " ".join(real_validation.errors))
+
+    def test_write_policy_manifest_template_can_create_valid_switch_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            policy = Path(tmp) / "usb.onnx"
+            policy.write_bytes(b"policy")
+
+            manifest_path = write_policy_manifest_template(policy, robot_revision="v1")
+            validation = validate_policy_manifest(manifest_path, policy_path=policy)
+            real_validation = validate_policy_manifest(
+                manifest_path,
+                policy_path=policy,
+                require_real_world_approved=True,
+            )
+
+            self.assertTrue(validation.ok)
+            self.assertFalse(real_validation.ok)
+            self.assertIn("real_world_approved", " ".join(real_validation.errors))
 
 
 def validate_policy_manifest_from_dict(data: dict, policy: Path):

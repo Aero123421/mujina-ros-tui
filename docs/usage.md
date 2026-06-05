@@ -118,20 +118,39 @@ VMで試すだけなら、`udev / dialout` や `device確認` が `WARN` でも�
 | `↑` / `↓` | policy候補を選択 |
 | `a` | 選択候補を切替対象としてARM |
 | `w` | ARM済み候補へ切替jobを起動 |
+| `g` | manifestなし外部policyの雛形をONNXの隣に作成 |
 | `t` | 現在policyのONNX読み込みテスト |
 | `F5` | USB/cache候補を再スキャン |
 
 重要:
 
-- USBや手動pathの外部policyは、manifest付きだけTUIからARM/切替できます。
-- manifestなしの外部policyはTUIではARMできません。
+- USBや手動pathの外部policyは、manifestを整えるとTUIからARM/切替できます。
+- manifestなしの外部policyを選ぶと、画面右側に `g` とCLI fallbackが出ます。
+- `g` で作るmanifestは下書きです。`robot_revision` を編集するまで切替できず、SIM確認後に `safety.real_world_approved=true` にするまで実機起動もできません。
 - policyを切り替えると、SIM確認済み状態は無効になります。
 
-詰まりやすい点:
+画面で先に解消すること:
 
-- USBに `.onnx` を置いたのに出ない場合は、`F5` で再スキャンします。
-- manifestなし外部policyを使いたい場合は、TUIではなく `./start.sh policy` で明示確認してください。
+- USBに `.onnx` を置いたら、まず `F5` で再スキャンします。TUIは `/media/$USER` と `/run/media/$USER` 配下を探します。
+- 候補に `manifestなし` が出たら、`g` で `.manifest.json` を作成します。
+- manifestを編集して `F5` を押すと、`manifest` / `manifest要修正` / `実機未承認` が一覧で分かります。
 - 切替後は必ずSimulation画面でSIM確認をやり直してください。
+
+CLIでmanifest雛形だけ作る場合:
+
+```bash
+./start.sh policy --write-manifest-template /path/to/policy.onnx
+```
+
+作成後に確認する項目:
+
+| 項目 | 何を見るか |
+| --- | --- |
+| `robot_revision` | 学習対象・実機revisionと一致するか |
+| `input.shape` / `output.shape` | Mujina TUIが期待する `[1,45]` / `[1,12]` か |
+| `joint_order` | Mujina既定の12軸順序か |
+| `hash.onnx_sha256` | ONNXを差し替えていないか |
+| `safety.real_world_approved` | SIM確認後、人間が実機投入可と判断した時だけ `true` |
 
 ## 3. Simulation 画面
 
@@ -165,7 +184,7 @@ CLIで同じことをする場合:
 ./start.sh sim-verified
 ```
 
-詰まりやすい点:
+画面で先に解消すること:
 
 - `SIM verified` が `LOCK` のままなら、まだ確認済みになっていません。
 - policyを変えた後は、以前のSIM確認は無効になります。
@@ -246,7 +265,7 @@ Real Launch画面は、実機を段階起動するための画面です。Dashbo
 
 ここでは、setup、build、policy切替、SIM起動、real launchなどのjob履歴とログ末尾を見られます。
 
-詰まった時は、まずここを見ます。
+起動や切替が止まった時は、まずここを見ます。
 
 | 状況 | 見る場所 |
 | --- | --- |
@@ -294,7 +313,7 @@ TUI上で `/dev/input/js0` が見えても、それだけで十分とは扱い�
 
 `repair` はworkspaceを削除しません。stale job、古いclaim、ジョブ起動失敗由来の手動復旧フラグを整理します。
 
-まだ分からない時は:
+まだ分からない時は、この順で画面上の状態をそろえます:
 
 1. `l` でLogsを見る
 2. `r` でReal Preflightを見る

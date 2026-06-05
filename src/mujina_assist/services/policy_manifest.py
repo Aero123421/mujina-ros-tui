@@ -25,6 +25,15 @@ DEFAULT_JOINT_ORDER = [
     "FR_knee_joint",
 ]
 
+DEFAULT_OBSERVATION_ORDER = [
+    "base_ang_vel_3",
+    "projected_gravity_3",
+    "command_3",
+    "dof_pos_minus_default_12",
+    "dof_vel_12",
+    "last_actions_12",
+]
+
 EXPECTED_INPUT_SHAPE = [1, 45]
 EXPECTED_OUTPUT_SHAPE = [1, 12]
 
@@ -136,6 +145,74 @@ def validate_policy_manifest(
             errors.append("manifest の onnx_sha256 が policy ファイルと一致しません。")
 
     return PolicyManifestValidation(ok=not errors, errors=errors, warnings=warnings, manifest=manifest)
+
+
+def default_manifest_path(policy_path: Path) -> Path:
+    return policy_path.with_suffix(".manifest.json")
+
+
+def build_policy_manifest_template(
+    policy_path: Path,
+    *,
+    robot_revision: str = "",
+    real_world_approved: bool = False,
+) -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "robot": "mujina",
+        "robot_revision": robot_revision,
+        "framework": "onnx",
+        "input": {
+            "shape": EXPECTED_INPUT_SHAPE,
+            "observation_order": DEFAULT_OBSERVATION_ORDER,
+        },
+        "output": {
+            "shape": EXPECTED_OUTPUT_SHAPE,
+            "unit": "action",
+            "scale": 0.25,
+            "target_formula": "ref_angle = action * action_scale + DEFAULT_ANGLE",
+        },
+        "joint_order": DEFAULT_JOINT_ORDER,
+        "hash": {"onnx_sha256": file_hash(policy_path)},
+        "safety": {
+            "requires_sim_verification": True,
+            "real_world_approved": real_world_approved,
+        },
+        "notes": {
+            "status": "draft",
+            "next_steps": [
+                "robot_revision を実機/学習対象に合わせて設定する",
+                "input/output shape と joint_order が export 条件と一致するか確認する",
+                "SIMで動作確認してから real_world_approved を true にする",
+            ],
+        },
+    }
+
+
+def write_policy_manifest_template(
+    policy_path: Path,
+    *,
+    manifest_path: Path | None = None,
+    overwrite: bool = False,
+    robot_revision: str = "",
+    real_world_approved: bool = False,
+) -> Path:
+    policy_path = policy_path.expanduser()
+    if not policy_path.exists():
+        raise FileNotFoundError(f"ONNX file not found: {policy_path}")
+    if policy_path.suffix.lower() != ".onnx":
+        raise ValueError("policy path must end with .onnx")
+    target = manifest_path.expanduser() if manifest_path is not None else default_manifest_path(policy_path)
+    if target.exists() and not overwrite:
+        raise FileExistsError(f"manifest already exists: {target}")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    data = build_policy_manifest_template(
+        policy_path,
+        robot_revision=robot_revision,
+        real_world_approved=real_world_approved,
+    )
+    target.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return target
 
 
 def _object_at(data: dict[str, Any], key: str) -> dict[str, Any]:

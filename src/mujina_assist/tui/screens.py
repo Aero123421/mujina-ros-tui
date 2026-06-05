@@ -600,6 +600,7 @@ if TEXTUAL_IMPORT_ERROR is None:
             ("t", "policy_test", "ONNX test"),
             ("a", "arm_policy", "候補確認"),
             ("w", "policy_switch", "切替"),
+            ("g", "manifest_template", "manifest雛形"),
             ("f5", "refresh", "更新"),
         ]
 
@@ -646,7 +647,13 @@ if TEXTUAL_IMPORT_ERROR is None:
                 if candidate.source_type == "usb":
                     chips.append("USB")
                 if candidate.manifest_path and candidate.manifest_path.exists():
-                    chips.append("manifest")
+                    validation = self._manifest_validation(candidate)
+                    chips.append("manifest" if validation and validation.ok else "manifest要修正")
+                    real_validation = self._manifest_validation(candidate, require_real_world_approved=True)
+                    if real_validation and real_validation.ok:
+                        chips.append("実機OK")
+                    elif validation and validation.ok and candidate.source_type in {"usb", "path"}:
+                        chips.append("実機未承認")
                 elif candidate.source_type in {"usb", "path"}:
                     chips.append("manifestなし")
                 prefix = "ARM " if self._armed_key == self._candidate_key(candidate) else ""
@@ -662,10 +669,12 @@ if TEXTUAL_IMPORT_ERROR is None:
                         "↑/↓: policy候補を選択",
                         "a: 選択候補を切替対象として確認",
                         "w: ARM済み候補へ切替jobを起動",
+                        "g: manifestなし外部policyの雛形を作成",
                         "t: 現在policyのONNX読み込みテスト",
                         "F5: USB/cache候補を再スキャン",
                         "",
-                        "[dim]USB上の .onnx は自動検出します。外部policyはmanifest付きだけTUI切替できます。[/dim]",
+                        "[dim]USB上の .onnx は /media/$USER と /run/media/$USER から自動検出します。[/dim]",
+                        "[dim]外部policyはmanifestを整えるとTUIで切替できます。実機起動にはSIM確認とreal_world_approved=trueも必要です。[/dim]",
                         f"[dim]current: {escape(report.active_policy_label)} / SIM {'verified' if report.sim_ready else 'not verified'}[/dim]",
                     ]
                 )
@@ -683,13 +692,32 @@ if TEXTUAL_IMPORT_ERROR is None:
             index = self._selected_index()
             return self._candidates[index] if index is not None else None
 
+        def _is_external(self, candidate: PolicyCandidate) -> bool:
+            return candidate.source_type in {"usb", "path"}
+
+        def _manifest_validation(self, candidate: PolicyCandidate, *, require_real_world_approved: bool = False):
+            if not (candidate.manifest_path and candidate.manifest_path.exists()):
+                return None
+            return validate_policy_manifest(
+                candidate.manifest_path,
+                policy_path=candidate.path,
+                require_real_world_approved=require_real_world_approved,
+            )
+
         def _update_detail(self) -> None:
             candidate = self._selected_candidate()
             if candidate is None:
-                self.query_one("#policy-detail", Static).update("[b]候補なし[/b]\nUSBを挿すか、先にSetup/Buildを完了してください。")
-                self.query_one("#policy-warning", Static).update("")
+                self.query_one("#policy-detail", Static).update(
+                    "[b]候補なし[/b]\nUSBを挿すか、先にSetup/Buildを完了してください。\n"
+                    "USB policy は /media/$USER または /run/media/$USER 配下の .onnx を探します。"
+                )
+                self.query_one("#policy-warning", Static).update(
+                    "[yellow]VirtualBox共有フォルダに置いた場合は、手動pathまたはUSBマウント配下へコピーしてください。[/]"
+                )
                 return
             manifest = str(candidate.manifest_path) if candidate.manifest_path else "なし"
+            validation = self._manifest_validation(candidate)
+            real_validation = self._manifest_validation(candidate, require_real_world_approved=True)
             lines = [
                 f"[b]{escape(candidate.label)}[/b]",
                 f"source: {escape(candidate.source_type)}",
@@ -704,10 +732,26 @@ if TEXTUAL_IMPORT_ERROR is None:
                 lines.append("[green]現在使用中です。[/]")
             if candidate.sim_verified:
                 lines.append("[green]このpolicyはSIM確認済みです。[/]")
+            if validation is not None:
+                if validation.ok:
+                    lines.append("[green]manifest: 切替条件OK[/]")
+                else:
+                    lines.append("[red]manifest: 要修正[/]")
+                    for item in validation.errors[:4]:
+                        lines.append(f"  - {escape(item)}")
+                if real_validation is not None and real_validation.ok:
+                    lines.append("[green]real launch: manifest承認OK[/]")
+                elif validation.ok and real_validation is not None:
+                    lines.append("[yellow]real launch: まだ未承認です。SIM確認後に safety.real_world_approved を true にしてください。[/]")
             self.query_one("#policy-detail", Static).update("\n".join(lines))
             warnings = []
-            if candidate.source_type in {"usb", "path"} and not (candidate.manifest_path and candidate.manifest_path.exists()):
-                warnings.append("[red]外部policyにmanifestがありません。TUI切替はロックします。[/]")
+            if self._is_external(candidate) and not (candidate.manifest_path and candidate.manifest_path.exists()):
+                warnings.append("[red]外部policyにmanifestがありません。[/]")
+                warnings.append("[yellow]g: 隣に manifest 雛形を作成 -> robot_revision を編集 -> F5 で再確認[/]")
+                warnings.append(f"[dim]CLI: ./start.sh policy --write-manifest-template {escape(str(candidate.path))}[/dim]")
+            elif self._is_external(candidate) and validation is not None and not validation.ok:
+                warnings.append("[red]manifestを修正するまでTUI切替はロックします。[/]")
+                warnings.append("[yellow]manifestを編集してから F5 で再スキャンしてください。[/]")
             if self._armed_key is not None:
                 armed = self._armed_candidate()
                 if armed is None:
@@ -733,11 +777,23 @@ if TEXTUAL_IMPORT_ERROR is None:
                 self.app.notify("切替候補がありません。USB/cacheを確認してください。", severity="warning", timeout=8)
                 return
             candidate = self._candidates[index]
-            if candidate.source_type in {"usb", "path"} and not (candidate.manifest_path and candidate.manifest_path.exists()):
-                self.app.notify("manifestなし外部policyはTUIでARMできません。./start.sh policy で明示確認してください。", severity="error", timeout=10)
+            if self._is_external(candidate) and not (candidate.manifest_path and candidate.manifest_path.exists()):
+                self.app.notify("gでmanifest雛形を作成し、robot_revisionを編集してからARMしてください。", severity="error", timeout=12)
+                return
+            validation = self._manifest_validation(candidate)
+            if self._is_external(candidate) and validation is not None and not validation.ok:
+                self.app.notify("policy manifest が不正です: " + " / ".join(validation.errors[:2]), severity="error", timeout=12)
                 return
             self._armed_key = self._candidate_key(candidate)
             self._refresh()
+
+        def action_manifest_template(self) -> None:
+            candidate = self._selected_candidate()
+            if candidate is None:
+                self.app.notify("manifestを作るpolicy候補がありません。USB/cacheを確認してください。", severity="warning", timeout=8)
+                return
+            if self.app.write_manifest_template_from_tui(candidate):
+                self._refresh()
 
         def action_policy_switch(self) -> None:
             if self._armed_key is None:

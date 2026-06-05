@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import json
 from types import SimpleNamespace
 import tempfile
 import unittest
@@ -9,6 +10,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from mujina_assist.models import AppPaths, DoctorReport, PolicyCandidate
+from mujina_assist.services.checks import file_hash
 from mujina_assist.services.jobs import create_job, list_jobs, update_job
 from mujina_assist.services.state import load_runtime_state
 
@@ -451,6 +453,96 @@ class TextualTuiSmokeTest(unittest.TestCase):
                         warning = str(app.screen.query_one("#policy-warning", Static).renderable)
 
                     self.assertIn("manifest", warning)
+                    launch_mock.assert_not_called()
+
+        asyncio.run(run_screen())
+
+    def test_tui_policy_screen_g_creates_manifest_template_for_usb_candidate(self) -> None:
+        app_class = getattr(tui_app_module, "MujinaAssistTui", None)
+        if app_class is None:
+            self.skipTest(f"{REQUIRED_TUI_API} is not implemented yet")
+
+        from textual.widgets import Static
+
+        report = DoctorReport(
+            os_label="Ubuntu 24.04",
+            ubuntu_24_04=True,
+            ros_installed=True,
+            workspace_cloned=True,
+            workspace_built=True,
+            active_policy_label="公式デフォルト",
+            active_policy_hash="policy-sha256",
+        )
+
+        async def run_screen() -> None:
+            with tempfile.TemporaryDirectory() as tmp:
+                app = app_class(Path(tmp))
+                policy = Path(tmp) / "usb.onnx"
+                policy.write_bytes(b"policy")
+                candidate = PolicyCandidate(label="USB: usb.onnx", path=policy, source_type="usb", policy_hash="new")
+                with patch("mujina_assist.tui.screens.build_doctor_report", return_value=report), patch.object(
+                    app,
+                    "policy_candidates",
+                    return_value=[candidate],
+                ):
+                    async with app.run_test() as pilot:
+                        await app.push_screen("policy")
+                        await pilot.pause(0.2)
+                        await pilot.press("g")
+                        await pilot.pause(0.2)
+                        warning = str(app.screen.query_one("#policy-warning", Static).renderable)
+
+                manifest = policy.with_suffix(".manifest.json")
+                data = json.loads(manifest.read_text(encoding="utf-8"))
+                self.assertEqual(data["hash"]["onnx_sha256"], file_hash(policy))
+                self.assertIn("robot_revision", warning)
+
+        asyncio.run(run_screen())
+
+    def test_tui_policy_screen_does_not_arm_invalid_manifest_candidate(self) -> None:
+        app_class = getattr(tui_app_module, "MujinaAssistTui", None)
+        if app_class is None:
+            self.skipTest(f"{REQUIRED_TUI_API} is not implemented yet")
+
+        from textual.widgets import Static
+
+        report = DoctorReport(
+            os_label="Ubuntu 24.04",
+            ubuntu_24_04=True,
+            ros_installed=True,
+            workspace_cloned=True,
+            workspace_built=True,
+            active_policy_label="公式デフォルト",
+            active_policy_hash="policy-sha256",
+        )
+
+        async def run_screen() -> None:
+            with tempfile.TemporaryDirectory() as tmp:
+                app = app_class(Path(tmp))
+                policy = Path(tmp) / "usb.onnx"
+                manifest = policy.with_suffix(".manifest.json")
+                policy.write_bytes(b"policy")
+                manifest.write_text("{}", encoding="utf-8")
+                candidate = PolicyCandidate(
+                    label="USB: usb.onnx",
+                    path=policy,
+                    source_type="usb",
+                    policy_hash="new",
+                    manifest_path=manifest,
+                )
+                with patch("mujina_assist.tui.screens.build_doctor_report", return_value=report), patch.object(
+                    app,
+                    "policy_candidates",
+                    return_value=[candidate],
+                ), patch.object(app, "launch_policy_switch_from_tui") as launch_mock:
+                    async with app.run_test() as pilot:
+                        await app.push_screen("policy")
+                        await pilot.pause(0.2)
+                        await pilot.press("a", "w")
+                        await pilot.pause(0.2)
+                        warning = str(app.screen.query_one("#policy-warning", Static).renderable)
+
+                    self.assertIn("manifestを修正", warning)
                     launch_mock.assert_not_called()
 
         asyncio.run(run_screen())
