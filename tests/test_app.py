@@ -9,8 +9,7 @@ from unittest.mock import patch
 from mujina_assist.app import MujinaAssistApp
 from mujina_assist.models import DEFAULT_MOTOR_IDS, DoctorCheck, DoctorReport, PolicyCandidate
 from mujina_assist.services.jobs import create_job, list_jobs, update_job
-from mujina_assist.services.motors import JOINT_ORDER, STANDBY_ANGLE, MotorScanEntry, build_scan_result
-from mujina_assist.services.startup_pose import save_startup_pose_profile_from_scan
+from mujina_assist.services.motors import STANDBY_ANGLE
 from mujina_assist.services.zero import new_zero_profile, save_zero_profile
 
 
@@ -279,27 +278,11 @@ class AppTest(unittest.TestCase):
             self.assertIn("use_mujina_transforms = True", run_bash_mock.call_args.args[0])
             self.assertIn("real-preflight-motor", str(run_bash_mock.call_args.kwargs["log_path"]))
 
-    def test_real_motor_preflight_scan_accepts_registered_startup_pose(self) -> None:
-        startup_positions = [0.4, 0.8, -1.8, -0.4, 0.8, -1.8, 0.4, 0.8, -1.8, -0.4, 0.8, -1.8]
+    def test_real_motor_preflight_scan_can_skip_only_startup_pose_gate(self) -> None:
+        unknown_pose = [0.4, 0.8, -1.8, -0.4, 0.8, -1.8, 0.4, 0.8, -1.8, -0.4, 0.8, -1.8]
         with tempfile.TemporaryDirectory() as tmp:
             app = MujinaAssistApp(Path(tmp))
             self._prepare_built_workspace(app)
-
-            entries = [
-                MotorScanEntry(
-                    joint,
-                    motor_id,
-                    responded=True,
-                    position_rad=position,
-                    velocity_rad_s=0.0,
-                    current_a=0.0,
-                    temperature_c=31.0,
-                    error_code="0x00",
-                    status="ok",
-                )
-                for joint, motor_id, position in zip(JOINT_ORDER, DEFAULT_MOTOR_IDS, startup_positions)
-            ]
-            save_startup_pose_profile_from_scan(app.paths, build_scan_result(entries), operator_confirmed=True)
 
             def run_bash_side_effect(*args, **kwargs):
                 lines = [
@@ -309,15 +292,17 @@ class AppTest(unittest.TestCase):
                         '"error_code": "0x00", "status": "ok"}'
                     )
                     % (motor_id, position)
-                    for motor_id, position in zip(DEFAULT_MOTOR_IDS, startup_positions)
+                    for motor_id, position in zip(DEFAULT_MOTOR_IDS, unknown_pose)
                 ]
                 kwargs["log_path"].write_text("\n".join(lines) + "\nMotor probe completed.\n", encoding="utf-8")
                 return SimpleNamespace(returncode=0, stdout="")
 
             with patch("mujina_assist.app.run_bash", side_effect=run_bash_side_effect):
-                result = app._run_real_motor_preflight_scan("net")
+                blocked = app._run_real_motor_preflight_scan("net")
+                skipped = app._run_real_motor_preflight_scan("net", skip_startup_pose_gate=True)
 
-            self.assertTrue(result)
+            self.assertFalse(blocked)
+            self.assertTrue(skipped)
 
     def test_execute_zero_job_stops_when_probe_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

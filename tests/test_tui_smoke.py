@@ -373,6 +373,7 @@ class TextualTuiSmokeTest(unittest.TestCase):
         self.assertEqual(jobs[0].payload["can_mode"], "serial")
         self.assertTrue(jobs[0].payload["operator_checklist_complete"])
         self.assertEqual(jobs[0].payload["real_confirmation"], "REAL")
+        self.assertFalse(jobs[0].payload["skip_startup_pose_gate"])
 
     def test_tui_real_launch_screen_accepts_real_enter(self) -> None:
         app_class = getattr(tui_app_module, "MujinaAssistTui", None)
@@ -413,6 +414,49 @@ class TextualTuiSmokeTest(unittest.TestCase):
                         can_mode="net",
                         real_confirmation="REAL",
                         checklist_complete=True,
+                        skip_startup_pose_gate=False,
+                    )
+
+        asyncio.run(run_screen())
+
+    def test_tui_real_launch_screen_can_skip_startup_pose_gate(self) -> None:
+        app_class = getattr(tui_app_module, "MujinaAssistTui", None)
+        if app_class is None:
+            self.skipTest(f"{REQUIRED_TUI_API} is not implemented yet")
+
+        from textual.widgets import Input
+
+        report = DoctorReport(
+            os_label="Ubuntu 24.04",
+            ubuntu_24_04=True,
+            ros_installed=True,
+            workspace_cloned=True,
+            workspace_built=True,
+            active_policy_label="公式デフォルト",
+            active_policy_hash="policy-sha256",
+            sim_ready=False,
+        )
+
+        async def run_screen() -> None:
+            with tempfile.TemporaryDirectory() as tmp:
+                app = app_class(Path(tmp))
+                with patch("mujina_assist.tui.screens.build_doctor_report", return_value=report), patch.object(
+                    app,
+                    "launch_real_from_tui",
+                ) as launch_mock:
+                    async with app.run_test() as pilot:
+                        await app.push_screen("real-launch")
+                        await pilot.pause(0.2)
+                        await pilot.press("1", "2", "3", "4")
+                        app.screen.query_one("#real-confirm", Input).focus()
+                        await pilot.press("R", "E", "A", "L", "enter")
+                        await pilot.pause(0.2)
+
+                    launch_mock.assert_called_once_with(
+                        can_mode="net",
+                        real_confirmation="REAL",
+                        checklist_complete=True,
+                        skip_startup_pose_gate=True,
                     )
 
         asyncio.run(run_screen())

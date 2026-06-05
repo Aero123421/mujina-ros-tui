@@ -266,27 +266,7 @@ CAN setupは通信路の準備です。motorの動作確認は次のMotor画面�
 
 zeroは自動原点復帰ではありません。人間が置いた現在姿勢をzeroとして保存します。姿勢を間違えたままzeroを書くと、その間違いが原点になります。
 
-### 4.6 起動姿勢 profile
-
-Real Launch前のmotor scanは、0ポジションにいるかを見るものではありません。実際の起動前姿勢がSTANDBYと違う場合は、その姿勢を登録しておきます。
-
-1. ロボットを実際に起動前へ置く姿勢に物理的に置き、停止させます。
-2. 周囲離隔、補助者、物理停止手段、CAN modeを確認します。
-3. 確認付きCLIで起動姿勢を登録します。
-
-```bash
-./start.sh startup-pose
-```
-
-serial CANを使う場合:
-
-```bash
-./start.sh startup-pose --can-mode serial
-```
-
-この操作は12軸の現在角度をMujina座標で保存します。保存時には全軸応答、低速度、低電流、温度、error codeを確認しますが、STANDBY姿勢やzero姿勢に近いことは要求しません。保存された起動姿勢は、次回以降のReal Launch前scanで安全な開始姿勢候補として使われます。
-
-### 4.7 Policy と SIM
+### 4.6 Policy と SIM
 
 1. `p` でPolicy画面を開きます。
 2. 外部policyならmanifestを整え、`manifest要修正` が消えていることを確認します。
@@ -296,7 +276,7 @@ serial CANを使う場合:
 
 `real_world_approved=true` は「TUIが自動で安全判定した」という意味ではありません。人間が学習条件、robot revision、SIM挙動、周囲の安全を確認したという印です。
 
-### 4.8 Real Preflight
+### 4.7 Real Preflight
 
 1. `r` でReal Preflight画面を開きます。
 2. `P0` が残っていないか確認します。
@@ -304,7 +284,7 @@ serial CANを使う場合:
 
 `sim_unverified`、`zero_profile_missing`、`imu_missing`、`can0_missing`、`serial_can_missing`、`serial_can0_missing`、`slcand_missing`、`can_unhealthy` が残っている場合は、Real Launchへ進まず該当画面へ戻ります。
 
-### 4.9 Real Launch
+### 4.8 Real Launch
 
 1. Dashboardに戻る場合は `d` を押します。
 2. 右上のFlow一覧で `Real Launch` を選び、`Enter` を押します。
@@ -319,14 +299,29 @@ serial CANを使う場合:
 
 | Key | 確認すること |
 | --- | --- |
-| `1` / `F1` | 登録済み起動姿勢/STANDBY、周囲離隔、補助者、物理停止手段 |
+| `1` / `F1` | 起動姿勢、周囲離隔、補助者、物理停止手段 |
 | `2` / `F2` | gamepad X mode、MODE LED OFF、`/joy` 応答 |
 | `3` / `F3` | policyの由来、学習条件、robot revision |
+| `4` / `F4` | 起動姿勢一致gateだけをskip |
 
 キーを押すとチェック欄が `[x]` に変わります。3項目すべてが `[x]` になるまで、実機起動操作は完了扱いになりません。
 
+`4` / `F4` は、Real Launch前のmotor scanで「現在姿勢がSTANDBY等の既定開始姿勢に近いか」だけをskipします。12軸の応答、速度、電流、温度、error code確認は残ります。起動時の実姿勢がSTANDBYと違う運用では、ロボットが意図した起動姿勢に置かれていることを人間が確認してから使います。
+
 5. 入力欄に `REAL` と入力します。`REAL` は「ここからCAN setup、motor scan、最終preflight、段階起動へ進む」ための最後の明示確認です。
 6. `Enter` / `Ctrl+E` で段階起動します。
+
+CLIで同じ姿勢一致gate skipを使う場合:
+
+```bash
+./start.sh robot --skip-startup-pose-gate
+```
+
+serial CANの場合:
+
+```bash
+./start.sh robot --can-mode serial --skip-startup-pose-gate
+```
 
 Real Launch jobは、起動直前にもう一度安全確認を行います。流れは次の通りです。
 
@@ -386,9 +381,10 @@ Real Launch画面は、実機を段階起動するための画面です。Dashbo
 | --- | --- |
 | `n` / `Ctrl+N` | CAN modeを `net` にする |
 | `u` / `Ctrl+U` | CAN modeを `serial` にする |
-| `1` / `F1` | 登録済み起動姿勢/STANDBY、周囲離隔、補助者、物理停止手段を確認 |
+| `1` / `F1` | 起動姿勢、周囲離隔、補助者、物理停止手段を確認 |
 | `2` / `F2` | gamepad X mode、MODE LED OFF、`/joy` 応答を確認 |
 | `3` / `F3` | policyの由来、学習条件、robot revisionを把握 |
+| `4` / `F4` | 起動姿勢一致gateだけをskip |
 | `Enter` / `Ctrl+E` | `REAL` 入力後に段階起動 |
 | `f` | Real Preflight画面へ |
 

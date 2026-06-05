@@ -289,7 +289,14 @@ if TEXTUAL_IMPORT_ERROR is None:
             self.notify(f"manifest雛形を作成しました: {manifest_path.name}。robot_revisionを編集してF5で再確認してください。", severity="information", timeout=14)
             return True
 
-        def launch_real_from_tui(self, *, can_mode: str, real_confirmation: str, checklist_complete: bool) -> None:
+        def launch_real_from_tui(
+            self,
+            *,
+            can_mode: str,
+            real_confirmation: str,
+            checklist_complete: bool,
+            skip_startup_pose_gate: bool = False,
+        ) -> None:
             self.refresh_runtime_state()
             if can_mode not in {"net", "serial"}:
                 self.notify("CAN mode は net / serial から選んでください。", severity="warning", timeout=8)
@@ -333,6 +340,7 @@ if TEXTUAL_IMPORT_ERROR is None:
                     "can_mode": can_mode,
                     "operator_checklist_complete": checklist_complete,
                     "real_confirmation": real_confirmation,
+                    "skip_startup_pose_gate": skip_startup_pose_gate,
                 },
             )
 

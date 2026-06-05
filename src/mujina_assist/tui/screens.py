@@ -909,6 +909,8 @@ if TEXTUAL_IMPORT_ERROR is None:
             ("f2", "toggle_gamepad", "gamepad"),
             ("3", "toggle_policy", "policy理解"),
             ("f3", "toggle_policy", "policy理解"),
+            ("4", "toggle_pose_gate", "姿勢gate skip"),
+            ("f4", "toggle_pose_gate", "姿勢gate skip"),
             ("ctrl+e", "execute_real", "起動"),
             ("f", "open_preflight", "Preflight"),
             ("f5", "refresh", "更新"),
@@ -933,6 +935,7 @@ if TEXTUAL_IMPORT_ERROR is None:
             self._pose_ok = False
             self._gamepad_ok = False
             self._policy_ok = False
+            self._skip_startup_pose_gate = False
             self._refresh()
             self.set_interval(2.0, self._refresh)
 
@@ -975,15 +978,17 @@ if TEXTUAL_IMPORT_ERROR is None:
             )
             _add_rows(table, rows)
             checks = [
-                f"1 [{'x' if self._pose_ok else ' '}] 登録済み起動姿勢/STANDBY、周囲離隔、補助者、物理停止手段",
+                f"1 [{'x' if self._pose_ok else ' '}] 起動姿勢、周囲離隔、補助者、物理停止手段",
                 f"2 [{'x' if self._gamepad_ok else ' '}] gamepad X mode / MODE LED OFF / /joy応答",
                 f"3 [{'x' if self._policy_ok else ' '}] policyの由来、学習条件、robot revisionを把握",
+                f"4 [{'x' if self._skip_startup_pose_gate else ' '}] 起動姿勢一致gateをskip（12軸live checkは残す）",
             ]
             self.query_one("#real-checklist", Static).update("[b]Operator Checklist[/b]\n" + "\n".join(checks))
             action_lines = [
                 "[b]Actions[/b]",
                 "n/u または Ctrl+N/Ctrl+U: CAN modeを net / serial に切替",
                 "1/2/3 または F1/F2/F3: checklistをtoggle",
+                "4 または F4: 起動姿勢一致gateだけをskip",
                 "REAL入力後 Enter / Ctrl+E: CAN setup -> 12軸zero-torque read-only scan -> 最終preflight -> 段階起動",
                 "f: Real Preflight画面へ",
             ]
@@ -1026,6 +1031,10 @@ if TEXTUAL_IMPORT_ERROR is None:
             self._policy_ok = not self._policy_ok
             self._refresh()
 
+        def action_toggle_pose_gate(self) -> None:
+            self._skip_startup_pose_gate = not self._skip_startup_pose_gate
+            self._refresh()
+
         def action_execute_real(self) -> None:
             confirm = self.query_one("#real-confirm", Input).value.strip()
             checklist_complete = self._pose_ok and self._gamepad_ok and self._policy_ok
@@ -1033,6 +1042,7 @@ if TEXTUAL_IMPORT_ERROR is None:
                 can_mode=self._can_mode,
                 real_confirmation=confirm,
                 checklist_complete=checklist_complete,
+                skip_startup_pose_gate=self._skip_startup_pose_gate,
             )
             self._refresh()
 
