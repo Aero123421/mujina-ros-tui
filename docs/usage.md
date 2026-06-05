@@ -2,7 +2,9 @@
 
 このページは、Ubuntu 24.04上で `mujina-ros-tui` を初めて触る人が、できるだけ詰まらずにセットアップ、SIM確認、実機前確認まで進めるためのガイドです。
 
-画像は Oracle VirtualBox 上の Ubuntu 24.04 VM で、実際に `./start.sh` を起動して撮ったスクリーンショットです。VMではIMU/CAN未接続なので、実機系の項目は `WARN` / `LOCK` になります。それは正常です。
+TUI画像は Oracle VirtualBox 上の Ubuntu 24.04 VM で、実際に `./start.sh` を起動して撮ったスクリーンショットです。VMではIMU/CAN未接続なので、実機系の項目は `WARN` / `LOCK` になります。それは正常です。
+
+原点姿勢とgamepadの画像は、本家 `mujina_ros` の公式画像を引用しています。各画像の近くに出典を書いています。
 
 ## 最短ルート
 
@@ -194,7 +196,131 @@ CLIで同じことをする場合:
 - policyを変えた後は、以前のSIM確認は無効になります。
 - gamepadが見えていても、MuJoCo上の姿勢と `/joy` 入力応答を見てから `v` を押してください。
 
-## 4. Real Preflight 画面
+## 4. 実機PCでの準備手順
+
+ここから先は、実機を動かすPCでの手順です。VMで試しているだけなら、IMU/CAN/gamepad が `WARN` / `LOCK` のままでも正常です。
+
+実機では、TUIの画面を上から順にそろえます。途中で `P0` lock が残ったら、Real Launchには進みません。
+
+TUIの `q`、job停止、ROS emergency stop は、物理電源遮断の代わりではありません。起動前に、手元で即座に切れる電源スイッチや非常停止、補助者の立ち位置、ロボット可動範囲、床面、ケーブルの逃げを確認してください。
+
+### 4.1 Setup
+
+1. 実機PCで repository を開きます。
+
+```bash
+cd mujina-ros-tui
+./start.sh
+```
+
+2. `s` でSetup画面を開きます。
+3. `workspace準備` と `colcon build` がOKであることを確認します。
+4. 実機デバイス権限まで設定したい場合は、TUIの `u` ではなく確認付きCLIを使います。
+
+```bash
+./start.sh setup
+```
+
+5. `dialout` やudev ruleの設定後に再ログインが必要と表示されたら、Ubuntuから一度ログアウトして入り直します。
+
+### 4.2 Device
+
+1. `i` でDevice画面を開きます。
+2. 次を確認します。
+
+| 項目 | 期待する状態 |
+| --- | --- |
+| IMU | `/dev/rt_usb_imu` が見える |
+| USB-CAN | serial CANを使う場合は `/dev/usb_can` が見える |
+| Gamepad | `/dev/input/js0` が見える |
+
+`/dev/ttyUSB*` や `/dev/ttyACM*` だけが見えて固定名がない場合、udev rule、USBの挿し直し、再ログインを確認します。固定名が出ないまま実機起動へ進むと、別デバイスをIMU/CANとして扱う危険があります。
+
+### 4.3 CAN
+
+1. `c` でCAN画面を開きます。
+2. SocketCANとして直接 `can0` を使う接続なら `n`、USB serial CANアダプタを `/dev/usb_can` から `slcand` で `can0` にする接続なら `u` を押します。
+3. `can0` が見えること、または `/dev/usb_can` から `can0` へ `slcand` が動いていることを確認します。
+
+CAN setupは通信路の準備です。motorの動作確認は次のMotor画面でread-only queryとして分けて行います。
+
+### 4.4 Motor
+
+1. `m` でMotor画面を開きます。
+2. network CANなら `n`、serial CANなら `u` で12軸 read-only queryを起動します。
+3. `l` でLogs画面を開き、motor read job logを見ます。
+4. 12軸のID、角度、応答が想定外なら、zeroやReal Launchへ進まず配線、CAN mode、motor IDを確認します。
+
+このread-only queryは、Real Launch前に「通信が見えているか」「座標やIDが大きく崩れていないか」を見るためのものです。ここで違和感がある場合は、実機を動かす前に止めます。
+
+### 4.5 Zero
+
+1. `z` でZero画面を開きます。
+2. zero前のread-only queryで現在姿勢を確認します。
+3. ロボットを本家READMEの原点姿勢に物理的に置きます。左右、前後、脚の向き、膝の折れ方向を参考画像と照合します。
+4. 原点を書き込む場合は、確認付きCLIを使います。
+
+```bash
+./start.sh zero
+```
+
+zeroは自動原点復帰ではありません。人間が置いた現在姿勢をzeroとして保存します。姿勢を間違えたままzeroを書くと、その間違いが原点になります。
+
+### 4.6 Policy と SIM
+
+1. `p` でPolicy画面を開きます。
+2. 外部policyならmanifestを整え、`manifest要修正` が消えていることを確認します。
+3. policyを切り替えたら `y` でSimulation画面を開き、`o` でSIMを起動します。
+4. MuJoCo上の姿勢、gamepad入力、`/joy` 応答を確認してから `v` でSIM確認済みにします。gamepadはX mode、MODE LED OFFを確認し、スティックやボタン入力が `/joy` に出ることを見ます。
+5. 実機投入するpolicyだけ、manifestの `safety.real_world_approved` を `true` にします。
+
+`real_world_approved=true` は「TUIが自動で安全判定した」という意味ではありません。人間が学習条件、robot revision、SIM挙動、周囲の安全を確認したという印です。
+
+### 4.7 Real Preflight
+
+1. `r` でReal Preflight画面を開きます。
+2. `P0` が残っていないか確認します。
+3. `f` を押すと確認付きCLI `./start.sh preflight` が開き、CAN modeを選んでpreflightを再確認できます。
+
+`sim_unverified`、`zero_profile_missing`、`imu_missing`、`can0_missing`、`serial_can_missing`、`serial_can0_missing`、`slcand_missing`、`can_unhealthy` が残っている場合は、Real Launchへ進まず該当画面へ戻ります。
+
+### 4.8 Real Launch
+
+1. Dashboardに戻る場合は `d` を押します。
+2. 右上のFlow一覧で `Real Launch` を選び、`Enter` を押します。
+3. CAN modeを選びます。
+
+| Key | CAN mode |
+| --- | --- |
+| `n` / `Ctrl+N` | network CAN |
+| `u` / `Ctrl+U` | serial CAN |
+
+4. operator checklistを1つずつ確認します。
+
+| Key | 確認すること |
+| --- | --- |
+| `1` / `F1` | 原点/STANDBY姿勢、周囲離隔、補助者、物理停止手段 |
+| `2` / `F2` | gamepad X mode、MODE LED OFF、`/joy` 応答 |
+| `3` / `F3` | policyの由来、学習条件、robot revision |
+
+キーを押すとチェック欄が `[x]` に変わります。3項目すべてが `[x]` になるまで、実機起動操作は完了扱いになりません。
+
+5. 入力欄に `REAL` と入力します。`REAL` は「ここからCAN setup、motor scan、最終preflight、段階起動へ進む」ための最後の明示確認です。
+6. `Enter` / `Ctrl+E` で段階起動します。
+
+Real Launch jobは、起動直前にもう一度安全確認を行います。流れは次の通りです。
+
+1. stale job / 競合job確認
+2. policy、manifest、SIM確認済み状態確認
+3. `/dev/rt_usb_imu`、CAN、gamepad確認
+4. CAN setup
+5. 12軸 zero-gain motor scan
+6. 最終preflight
+7. IMU node → `mujina_main` → joy node の順で段階起動
+
+起動しない場合や途中で止まる場合は、`l` でLogs画面を開き、real launch job logを確認します。実機が意図しない動きをした場合は、TUI上の操作より先に物理停止手段で止めてください。TUIを閉じることと、実機の電源やトルクを安全に止めることは同じではありません。
+
+## 5. Real Preflight 画面
 
 ![Real Preflight](assets/screenshots/real-preflight.png)
 
@@ -208,6 +334,8 @@ CLIで同じことをする場合:
 - `zero_profile_missing`: verified zero profileがない
 - `imu_missing`: `/dev/rt_usb_imu` がない
 - `can0_missing`: `can0` がない
+- `serial_can_missing`: serial CAN用の `/dev/usb_can` がない
+- `serial_can0_missing` / `slcand_missing`: `/dev/usb_can` から `can0` を作る `slcand` が動いていない
 - `can_unhealthy`: CAN状態がWARN
 - `operator_checklist`: operator checklist未完了
 - `real_confirmation`: `REAL` 未入力
@@ -221,10 +349,10 @@ CLIで同じことをする場合:
 詰まりやすい点:
 
 - VMではIMU/CANがないので、`imu_missing` や `can0_missing` は自然です。
-- 実機PCで出る場合は、配線、udev、CANアダプタ、`can0` setupを確認します。
+- 実機PCで出る場合は、配線、udev、CANアダプタ、`can0` setupを確認します。serial CANなら `/dev/usb_can` と `slcand` も確認します。
 - `sim_unverified` が残っている場合、まずSimulation画面でSIM確認を完了してください。
 
-## 5. Real Launch 画面
+## 6. Real Launch 画面
 
 ![Real Launch](assets/screenshots/real-launch.png)
 
@@ -261,7 +389,7 @@ Real Launch画面は、実機を段階起動するための画面です。Dashbo
 - preflight中に競合jobが始まった場合も、段階起動には進みません。
 - ROSのemergency stopは物理電源遮断ではありません。必ず独立した物理停止手段を用意してください。
 
-## 6. Logs 画面
+## 7. Logs 画面
 
 ![Logs](assets/screenshots/logs.png)
 
@@ -278,11 +406,13 @@ Real Launch画面は、実機を段階起動するための画面です。Dashbo
 | policy切替が失敗した | `policy_switch` job log |
 | SIMやreal launchが起動しない | 対応するjob logとReal Preflight |
 
-## 7. 原点姿勢とzeroの注意
+## 8. 原点姿勢とzeroの注意
 
 本家 `mujina_ros` のzero書き込みは、自動で正しい初期姿勢へ戻す処理ではありません。人間がロボットを所定姿勢に置いた後、「今の姿勢をzeroとして保存する」操作です。
 
 ![原点姿勢の参考画像](../third_party/mujina_ros/media/robot-pose-to-calib-motor-origin.jpg)
+
+出典: 本家 `mujina_ros` 公式画像 `third_party/mujina_ros/media/robot-pose-to-calib-motor-origin.jpg`。Upstream: https://github.com/rt-net/mujina_ros 。Vendored commit: `38ff97f12d0ef424dd7fc840d3ce7a1ebad2a49d`。License: MIT License、`third_party/mujina_ros/LICENSE` と `THIRD_PARTY_NOTICES.md` を参照。Copyright (c) 2024 Kento Kawaharazuka, 2025 CoRE-MA-KING, 2026 RT Corporation.
 
 TUIのZero画面では、zero前のread-only queryを起動できます。原点書き込みそのものは確認付きCLIへ委譲します。
 
@@ -292,9 +422,11 @@ TUIのZero画面では、zero前のread-only queryを起動できます。原点
 
 間違った姿勢でzeroを書き込むと、その間違いが原点として扱われます。実機が変な動きをした、CANやmotor IDが怪しい、姿勢が合っていない、という場合はzeroを書き直す前に `doctor`、`preflight`、motor read-only queryで切り分けてください。
 
-## 8. Gamepad確認
+## 9. Gamepad確認
 
 ![gamepad mode](../third_party/mujina_ros/media/gamepad_mode_transition.png)
+
+出典: 本家 `mujina_ros` 公式画像 `third_party/mujina_ros/media/gamepad_mode_transition.png`。Upstream: https://github.com/rt-net/mujina_ros 。Vendored commit: `38ff97f12d0ef424dd7fc840d3ce7a1ebad2a49d`。License: MIT License、`third_party/mujina_ros/LICENSE` と `THIRD_PARTY_NOTICES.md` を参照。Copyright (c) 2024 Kento Kawaharazuka, 2025 CoRE-MA-KING, 2026 RT Corporation.
 
 実機前に見ること:
 
@@ -305,7 +437,7 @@ TUIのZero画面では、zero前のread-only queryを起動できます。原点
 
 TUI上で `/dev/input/js0` が見えても、それだけで十分とは扱いません。Real Launch前に `/joy` の応答まで確認してください。
 
-## 9. 壊れた状態から戻す
+## 10. 壊れた状態から戻す
 
 途中で閉じた、setupを止めた、SIMを止めた、jobが残った、という時はこの順で戻します。
 
@@ -324,7 +456,7 @@ TUI上で `/dev/input/js0` が見えても、それだけで十分とは扱い�
 3. `./start.sh doctor` の出力を見る
 4. VMならIMU/CAN未接続は正常、と切り分ける
 
-## 10. 実機へ進む前の最終チェック
+## 11. 実機へ進む前の最終チェック
 
 実機でReal Launchへ進む前に、最低限これを満たしてください。
 
